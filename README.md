@@ -77,6 +77,14 @@ No installation, Python, or external dependencies required — just download and
 
 ---
 
+## Known Limitations
+
+- **Facebook `@` mentions / tags**: Full select-all replacement (`Ctrl + A` → paste) does not preserve Facebook tags in posts or comments. Facebook stores mentions as rich-text objects tied to hidden user IDs rather than plain `@username` text, so pasting plain text turns the tag into unlinked text that will not notify the person.
+  - **Workaround**: Turn on **Fix highlighted text only** and highlight only the text *excluding* the blue tag, or fix your text first and add the `@` tag last.
+- **Other rich-text formatting**: Because text is pasted back as plain text, rich formatting (such as bold/italic styling or masked hyperlinks) is stripped when replacing an entire field. Plain-text `@handle` mentions on platforms like Discord, X, and Bluesky still resolve normally when posted (on Discord, a pasted mention may look white in the compose box before sending, then turn blue and notify normally in chat).
+
+---
+
 ## CLI Self-Test
 
 You can verify model caching/downloading, Vulkan GPU offloading, shader warmup, inference latency, uncensored output, multiline preservation, and clean VRAM unloading from a terminal:
