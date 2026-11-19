@@ -655,3 +655,38 @@ pub fn restore_window_position(hwnd_raw: isize, x: i32, y: i32) {
         );
     }
 }
+
+#[link(name = "dwmapi")]
+extern "system" {
+    fn DwmSetWindowAttribute(
+        hwnd: HWND,
+        dwattribute: u32,
+        pvattribute: *const core::ffi::c_void,
+        cbattribute: u32,
+    ) -> windows::core::HRESULT;
+}
+
+/// Syncs the native Windows title bar between light and dark mode.
+pub fn set_window_dark_titlebar(hwnd_raw: isize, dark: bool) {
+    if hwnd_raw == 0 {
+        return;
+    }
+    let hwnd = HWND(hwnd_raw as *mut _);
+    let enabled: i32 = i32::from(dark);
+    unsafe {
+        let hr = DwmSetWindowAttribute(
+            hwnd,
+            20, // DWMWA_USE_IMMERSIVE_DARK_MODE (Windows 11 / 10 20H1+)
+            (&enabled as *const i32).cast(),
+            std::mem::size_of::<i32>() as u32,
+        );
+        if hr.is_err() {
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                19, // Pre-20H1 Windows 10 fallback
+                (&enabled as *const i32).cast(),
+                std::mem::size_of::<i32>() as u32,
+            );
+        }
+    }
+}

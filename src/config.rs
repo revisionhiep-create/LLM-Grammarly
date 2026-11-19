@@ -104,6 +104,7 @@ pub struct AppConfig {
     pub model_dir: Option<String>,
     pub hotkey: HotkeyBinding,
     pub minimize_to_tray_on_close: bool,
+    pub dark_mode: bool,
     pub window: Option<WindowState>,
 }
 
@@ -114,6 +115,7 @@ impl Default for AppConfig {
             model_dir: None,
             hotkey: HotkeyBinding::default(),
             minimize_to_tray_on_close: false,
+            dark_mode: true,
             window: None,
         }
     }
@@ -324,5 +326,24 @@ mod tests {
         let encoded = serde_json::to_string(&cfg).unwrap();
         let decoded: AppConfig = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.window, cfg.window);
+    }
+
+    #[test]
+    fn dark_mode_defaults_true_and_roundtrips() {
+        let def = AppConfig::default();
+        assert!(def.dark_mode);
+
+        let missing_field_json =
+            r#"{"model_url":"https://huggingface.co/a/b/resolve/main/m.gguf"}"#;
+        let decoded_missing: AppConfig = serde_json::from_str(missing_field_json).unwrap();
+        assert!(decoded_missing.dark_mode);
+
+        for mode in [false, true] {
+            let mut cfg = AppConfig::default();
+            cfg.dark_mode = mode;
+            let encoded = serde_json::to_string(&cfg).unwrap();
+            let decoded: AppConfig = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded.dark_mode, mode);
+        }
     }
 }

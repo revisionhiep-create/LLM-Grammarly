@@ -18,29 +18,102 @@ use crate::icon;
 use crate::icon_render;
 use crate::llm::{LlmHandle, LoadInfo};
 use crate::taskbar::{
-    get_window_placement_state, pick_folder_dialog, restore_window_position, ShellBridge,
-    ShellCommand, TaskbarProgress,
+    get_window_placement_state, pick_folder_dialog, restore_window_position,
+    set_window_dark_titlebar, ShellBridge, ShellCommand, TaskbarProgress,
 };
 
-const BG_WINDOW: egui::Color32 = egui::Color32::from_rgb(244, 243, 241); // #F4F3F1
-const BG_CARD: egui::Color32 = egui::Color32::from_rgb(255, 255, 255); // #FFFFFF
-const BG_INPUT: egui::Color32 = egui::Color32::from_rgb(250, 250, 249); // #FAFAF9
-const BG_CALLOUT: egui::Color32 = egui::Color32::from_rgb(248, 247, 245); // #F8F7F5
-const BG_KEYCAP: egui::Color32 = egui::Color32::from_rgb(242, 240, 236); // #F2F0EC
-const BG_TRACK: egui::Color32 = egui::Color32::from_rgb(231, 229, 226); // #E7E5E2
-const BORDER_SUBTLE: egui::Color32 = egui::Color32::from_rgb(229, 226, 220); // #E5E2DC
-const BORDER_MED: egui::Color32 = egui::Color32::from_rgb(214, 211, 205); // #D6D3CD
-const TEXT_PRIMARY: egui::Color32 = egui::Color32::from_rgb(31, 29, 27); // #1F1D1B
-const TEXT_MUTED: egui::Color32 = egui::Color32::from_rgb(115, 110, 104); // #736E68
-const BTN_PRIMARY_BG: egui::Color32 = egui::Color32::from_rgb(41, 38, 36); // #292624
-const BTN_SEC_BG: egui::Color32 = egui::Color32::from_rgb(236, 234, 230); // #ECEAE6
-const BTN_SEC_HOVER: egui::Color32 = egui::Color32::from_rgb(226, 223, 217); // #E2DFD9
-const DOT_READY: egui::Color32 = egui::Color32::from_rgb(78, 128, 96); // #4E8060
-const DOT_BUSY: egui::Color32 = egui::Color32::from_rgb(181, 137, 61); // #B5893D
-const DOT_OFF: egui::Color32 = egui::Color32::from_rgb(160, 154, 146); // #A09A92
-const ERROR_BG: egui::Color32 = egui::Color32::from_rgb(250, 241, 240);
-const ERROR_BORDER: egui::Color32 = egui::Color32::from_rgb(224, 192, 188);
-const ERROR_TEXT: egui::Color32 = egui::Color32::from_rgb(156, 60, 52);
+#[derive(Clone, Copy)]
+struct ThemeColors {
+    bg_window: egui::Color32,
+    bg_card: egui::Color32,
+    bg_input: egui::Color32,
+    bg_callout: egui::Color32,
+    bg_callout_hover: egui::Color32,
+    bg_callout_active: egui::Color32,
+    bg_keycap: egui::Color32,
+    bg_track: egui::Color32,
+    border_subtle: egui::Color32,
+    border_med: egui::Color32,
+    text_primary: egui::Color32,
+    text_muted: egui::Color32,
+    accent_fill: egui::Color32,
+    btn_sec_bg: egui::Color32,
+    btn_sec_hover: egui::Color32,
+    dot_ready: egui::Color32,
+    dot_busy: egui::Color32,
+    dot_off: egui::Color32,
+    error_bg: egui::Color32,
+    error_border: egui::Color32,
+    error_text: egui::Color32,
+    selection_bg: egui::Color32,
+    power_border_off: egui::Color32,
+}
+
+impl ThemeColors {
+    const fn light() -> Self {
+        Self {
+            bg_window: egui::Color32::from_rgb(244, 243, 241),         // #F4F3F1
+            bg_card: egui::Color32::from_rgb(255, 255, 255),           // #FFFFFF
+            bg_input: egui::Color32::from_rgb(250, 250, 249),          // #FAFAF9
+            bg_callout: egui::Color32::from_rgb(248, 247, 245),        // #F8F7F5
+            bg_callout_hover: egui::Color32::from_rgb(240, 238, 234),  // #F0EEEA
+            bg_callout_active: egui::Color32::from_rgb(232, 229, 223), // #E8E5DF
+            bg_keycap: egui::Color32::from_rgb(242, 240, 236),         // #F2F0EC
+            bg_track: egui::Color32::from_rgb(231, 229, 226),          // #E7E5E2
+            border_subtle: egui::Color32::from_rgb(229, 226, 220),     // #E5E2DC
+            border_med: egui::Color32::from_rgb(214, 211, 205),        // #D6D3CD
+            text_primary: egui::Color32::from_rgb(31, 29, 27),         // #1F1D1B
+            text_muted: egui::Color32::from_rgb(115, 110, 104),        // #736E68
+            accent_fill: egui::Color32::from_rgb(41, 38, 36),          // #292624
+            btn_sec_bg: egui::Color32::from_rgb(236, 234, 230),        // #ECEAE6
+            btn_sec_hover: egui::Color32::from_rgb(226, 223, 217),     // #E2DFD9
+            dot_ready: egui::Color32::from_rgb(78, 128, 96),           // #4E8060
+            dot_busy: egui::Color32::from_rgb(181, 137, 61),           // #B5893D
+            dot_off: egui::Color32::from_rgb(160, 154, 146),           // #A09A92
+            error_bg: egui::Color32::from_rgb(250, 241, 240),
+            error_border: egui::Color32::from_rgb(224, 192, 188),
+            error_text: egui::Color32::from_rgb(156, 60, 52),
+            selection_bg: egui::Color32::from_rgb(214, 211, 205),
+            power_border_off: egui::Color32::from_rgb(200, 196, 190), // #C8C4BE
+        }
+    }
+
+    const fn dark() -> Self {
+        Self {
+            bg_window: egui::Color32::from_rgb(23, 22, 21),            // #171615
+            bg_card: egui::Color32::from_rgb(33, 32, 30),              // #21201E
+            bg_input: egui::Color32::from_rgb(27, 26, 24),             // #1B1A18
+            bg_callout: egui::Color32::from_rgb(40, 38, 36),           // #282624
+            bg_callout_hover: egui::Color32::from_rgb(49, 47, 44),     // #312F2C
+            bg_callout_active: egui::Color32::from_rgb(57, 54, 50),    // #393632
+            bg_keycap: egui::Color32::from_rgb(46, 44, 41),            // #2E2C29
+            bg_track: egui::Color32::from_rgb(53, 50, 47),             // #35322F
+            border_subtle: egui::Color32::from_rgb(51, 48, 44),        // #33302C
+            border_med: egui::Color32::from_rgb(71, 67, 62),           // #47433E
+            text_primary: egui::Color32::from_rgb(242, 240, 236),      // #F2F0EC
+            text_muted: egui::Color32::from_rgb(161, 155, 147),        // #A19B93
+            accent_fill: egui::Color32::from_rgb(230, 226, 220),       // #E6E2DC
+            btn_sec_bg: egui::Color32::from_rgb(46, 44, 41),           // #2E2C29
+            btn_sec_hover: egui::Color32::from_rgb(58, 55, 51),        // #3A3733
+            dot_ready: egui::Color32::from_rgb(92, 166, 116),          // #5CA674
+            dot_busy: egui::Color32::from_rgb(214, 165, 75),           // #D6A54B
+            dot_off: egui::Color32::from_rgb(126, 120, 113),           // #7E7871
+            error_bg: egui::Color32::from_rgb(51, 31, 30),             // #331F1E
+            error_border: egui::Color32::from_rgb(110, 59, 54),        // #6E3B36
+            error_text: egui::Color32::from_rgb(240, 138, 130),        // #F08A82
+            selection_bg: egui::Color32::from_rgb(74, 70, 64),         // #4A4640
+            power_border_off: egui::Color32::from_rgb(163, 158, 150),  // #A39E96
+        }
+    }
+
+    fn for_mode(dark_mode: bool) -> Self {
+        if dark_mode {
+            Self::dark()
+        } else {
+            Self::light()
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 enum AppPhase {
@@ -270,6 +343,7 @@ pub struct KeyboardLlmApp {
     icon_tex_off: egui::TextureHandle,
     icon_tex_on: egui::TextureHandle,
     last_viewport_active: bool,
+    applied_dark_mode: bool,
     recording_hotkey: bool,
     hotkey_hint: Option<String>,
     browsing_folder: Arc<AtomicBool>,
@@ -277,9 +351,10 @@ pub struct KeyboardLlmApp {
 
 impl KeyboardLlmApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        apply_neutral_visuals(&cc.egui_ctx);
-
         let config = load_config();
+        let dark_mode = config.dark_mode;
+        apply_theme_visuals(&cc.egui_ctx, dark_mode);
+
         let initial_window = config.window;
         let url_input = config.model_url.clone();
         let effective_dir = effective_model_dir(&config);
@@ -317,6 +392,10 @@ impl KeyboardLlmApp {
                 _ => None,
             })
             .unwrap_or(0);
+
+        if hwnd_raw != 0 {
+            set_window_dark_titlebar(hwnd_raw, dark_mode);
+        }
 
         if let Some(ws) = initial_window {
             if hwnd_raw != 0 {
@@ -406,6 +485,7 @@ impl KeyboardLlmApp {
             icon_tex_off: tex_off,
             icon_tex_on: tex_on,
             last_viewport_active: false,
+            applied_dark_mode: dark_mode,
             recording_hotkey: false,
             hotkey_hint: None,
             browsing_folder: Arc::new(AtomicBool::new(false)),
@@ -619,10 +699,17 @@ impl eframe::App for KeyboardLlmApp {
         let is_different_from_active =
             is_on && preview_path.is_some() && preview_path != active_model_path;
 
+        if self.config.dark_mode != self.applied_dark_mode {
+            apply_theme_visuals(ctx, self.config.dark_mode);
+            set_window_dark_titlebar(self.hwnd_raw, self.config.dark_mode);
+            self.applied_dark_mode = self.config.dark_mode;
+        }
+        let theme = ThemeColors::for_mode(self.config.dark_mode);
+
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
-                    .fill(BG_WINDOW)
+                    .fill(theme.bg_window)
                     .inner_margin(egui::Margin::same(16)),
             )
             .show(ctx, |ui| {
@@ -641,34 +728,34 @@ impl eframe::App for KeyboardLlmApp {
                         egui::RichText::new("Keyboard LLM")
                             .size(17.5)
                             .strong()
-                            .color(TEXT_PRIMARY),
+                            .color(theme.text_primary),
                     );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let (dot_color, status_text): (egui::Color32, String) = match &phase {
                             AppPhase::Off if cached_size.is_none() => {
-                                (DOT_BUSY, "Setup".to_string())
+                                (theme.dot_busy, "Setup".to_string())
                             }
-                            AppPhase::Off => (DOT_OFF, "Off".to_string()),
+                            AppPhase::Off => (theme.dot_off, "Off".to_string()),
                             AppPhase::Downloading {
                                 downloaded, total, ..
                             } => {
                                 if let Some(tot) = total.filter(|&t| t > 0) {
                                     let pct = ((*downloaded as f64 / tot as f64) * 100.0)
                                         .clamp(0.0, 100.0);
-                                    (DOT_BUSY, format!("Downloading {pct:.0}%"))
+                                    (theme.dot_busy, format!("Downloading {pct:.0}%"))
                                 } else {
-                                    (DOT_BUSY, "Downloading...".to_string())
+                                    (theme.dot_busy, "Downloading...".to_string())
                                 }
                             }
-                            AppPhase::Loading => (DOT_BUSY, "Loading...".to_string()),
-                            AppPhase::On { .. } => (DOT_READY, "Ready".to_string()),
-                            AppPhase::Fixing { .. } => (DOT_BUSY, "Fixing...".to_string()),
-                            AppPhase::Unloading => (DOT_BUSY, "Unloading...".to_string()),
+                            AppPhase::Loading => (theme.dot_busy, "Loading...".to_string()),
+                            AppPhase::On { .. } => (theme.dot_ready, "Ready".to_string()),
+                            AppPhase::Fixing { .. } => (theme.dot_busy, "Fixing...".to_string()),
+                            AppPhase::Unloading => (theme.dot_busy, "Unloading...".to_string()),
                         };
                         egui::Frame::new()
-                            .fill(BG_CARD)
-                            .stroke(egui::Stroke::new(1.0_f32, BORDER_SUBTLE))
+                            .fill(theme.bg_card)
+                            .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
                             .corner_radius(egui::CornerRadius::same(12))
                             .inner_margin(egui::Margin::symmetric(10, 4))
                             .show(ui, |ui| {
@@ -682,15 +769,24 @@ impl eframe::App for KeyboardLlmApp {
                                     ui.label(
                                         egui::RichText::new(status_text)
                                             .size(12.0)
-                                            .color(TEXT_PRIMARY),
+                                            .color(theme.text_primary),
                                     );
                                 });
                             });
+
+                        ui.add_space(6.0);
+                        if theme_switch(ui, self.config.dark_mode, &theme).clicked() {
+                            self.config.dark_mode = !self.config.dark_mode;
+                            apply_theme_visuals(ctx, self.config.dark_mode);
+                            set_window_dark_titlebar(self.hwnd_raw, self.config.dark_mode);
+                            self.applied_dark_mode = self.config.dark_mode;
+                            self.save_current_config();
+                        }
                     });
                 });
 
                 // 2. Main Power & Interactive Download Card
-                card_frame().show(ui, |ui| {
+                card_frame(&theme).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
 
@@ -698,8 +794,8 @@ impl eframe::App for KeyboardLlmApp {
                         AppPhase::Off => {
                             if cached_size.is_none() {
                                 egui::Frame::new()
-                                    .fill(BG_CALLOUT)
-                                    .stroke(egui::Stroke::new(1.0_f32, BORDER_SUBTLE))
+                                    .fill(theme.bg_callout)
+                                    .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
                                     .corner_radius(egui::CornerRadius::same(8))
                                     .inner_margin(egui::Margin::same(10))
                                     .show(ui, |ui| {
@@ -714,14 +810,14 @@ impl eframe::App for KeyboardLlmApp {
                                             egui::RichText::new(title)
                                                 .size(12.5)
                                                 .strong()
-                                                .color(TEXT_PRIMARY),
+                                                .color(theme.text_primary),
                                         );
                                         ui.label(
                                             egui::RichText::new(
                                                 "Click below to download the default uncensored Qwen3.5-4B model (~2.5 GB) from Hugging Face to your storage folder.",
                                             )
                                             .size(11.5)
-                                            .color(TEXT_MUTED),
+                                            .color(theme.text_muted),
                                         );
                                     });
                             }
@@ -733,7 +829,9 @@ impl eframe::App for KeyboardLlmApp {
                             } else {
                                 "Download & Turn On"
                             };
-                            if power_switch_row(ui, switch_label, false, true, false).clicked() {
+                            if power_switch_row(ui, &theme, switch_label, false, true, false)
+                                .clicked()
+                            {
                                 let url = self.url_input.clone();
                                 if let Ok(norm) = normalize_model_url(&url) {
                                     self.url_input = norm.clone();
@@ -758,7 +856,7 @@ impl eframe::App for KeyboardLlmApp {
                                                         egui::Button::new(
                                                             egui::RichText::new("Discard partial file")
                                                                 .size(11.0)
-                                                                .color(TEXT_MUTED),
+                                                                .color(theme.text_muted),
                                                         )
                                                         .frame(false),
                                                     )
@@ -779,8 +877,8 @@ impl eframe::App for KeyboardLlmApp {
                             dest_display,
                         } => {
                             egui::Frame::new()
-                                .fill(BG_CALLOUT)
-                                .stroke(egui::Stroke::new(1.0_f32, BORDER_SUBTLE))
+                                .fill(theme.bg_callout)
+                                .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
                                 .corner_radius(egui::CornerRadius::same(8))
                                 .inner_margin(egui::Margin::same(10))
                                 .show(ui, |ui| {
@@ -798,7 +896,7 @@ impl eframe::App for KeyboardLlmApp {
                                             egui::RichText::new(heading)
                                                 .size(12.5)
                                                 .strong()
-                                                .color(TEXT_PRIMARY),
+                                                .color(theme.text_primary),
                                         );
                                         if let Some(tot) = total.filter(|&t| t > 0) {
                                             let pct = ((*downloaded as f64 / tot as f64) * 100.0)
@@ -810,7 +908,7 @@ impl eframe::App for KeyboardLlmApp {
                                                         egui::RichText::new(format!("{pct:.0}%"))
                                                             .size(12.5)
                                                             .strong()
-                                                            .color(TEXT_PRIMARY),
+                                                            .color(theme.text_primary),
                                                     );
                                                 },
                                             );
@@ -821,7 +919,7 @@ impl eframe::App for KeyboardLlmApp {
                                         .filter(|&t| t > 0)
                                         .map(|t| (*downloaded as f32 / t as f32).clamp(0.0, 1.0))
                                         .unwrap_or(0.0);
-                                    draw_neutral_progress_bar(ui, frac, total.is_none());
+                                    draw_neutral_progress_bar(ui, &theme, frac, total.is_none());
 
                                     let mut stats = if let Some(tot) = total {
                                         format!(
@@ -841,25 +939,30 @@ impl eframe::App for KeyboardLlmApp {
                                         stats.push_str(&format!("  ·  {eta}"));
                                     }
                                     ui.label(
-                                        egui::RichText::new(stats).size(11.5).color(TEXT_PRIMARY),
+                                        egui::RichText::new(stats)
+                                            .size(11.5)
+                                            .color(theme.text_primary),
                                     );
 
                                     let dest_short = shorten_middle(dest_display, 58);
                                     ui.label(
                                         egui::RichText::new(format!("Saving to: {dest_short}"))
                                             .size(11.0)
-                                            .color(TEXT_MUTED),
+                                            .color(theme.text_muted),
                                     )
                                     .on_hover_text(dest_display);
                                 });
 
-                            if secondary_button(ui, "Pause / Cancel Download", 38.0).clicked() {
+                            if secondary_button(ui, &theme, "Pause / Cancel Download", 38.0)
+                                .clicked()
+                            {
                                 let _ = self.ctrl_tx.send(CtrlCmd::CancelDownload);
                             }
                         }
                         AppPhase::Loading => {
                             let _ = power_switch_row(
                                 ui,
+                                &theme,
                                 "Loading model into GPU...",
                                 true,
                                 false,
@@ -867,20 +970,28 @@ impl eframe::App for KeyboardLlmApp {
                             );
                         }
                         AppPhase::On { .. } | AppPhase::Fixing { .. } => {
-                            if power_switch_row(ui, "Turn Off", true, true, false).clicked() {
+                            if power_switch_row(ui, &theme, "Turn Off", true, true, false).clicked()
+                            {
                                 let _ = self.ctrl_tx.send(CtrlCmd::TurnOff);
                             }
                         }
                         AppPhase::Unloading => {
-                            let _ = power_switch_row(ui, "Unloading VRAM...", false, false, true);
+                            let _ = power_switch_row(
+                                ui,
+                                &theme,
+                                "Unloading VRAM...",
+                                false,
+                                false,
+                                true,
+                            );
                         }
                     }
 
                     // Hotkey + customize row
                     ui.horizontal(|ui| {
                         egui::Frame::new()
-                            .fill(BG_KEYCAP)
-                            .stroke(egui::Stroke::new(1.0_f32, BORDER_MED))
+                            .fill(theme.bg_keycap)
+                            .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
                             .corner_radius(egui::CornerRadius::same(5))
                             .inner_margin(egui::Margin::symmetric(8, 2))
                             .show(ui, |ui| {
@@ -888,13 +999,13 @@ impl eframe::App for KeyboardLlmApp {
                                     egui::RichText::new(self.config.hotkey.display_label())
                                         .size(11.5)
                                         .strong()
-                                        .color(TEXT_PRIMARY),
+                                        .color(theme.text_primary),
                                 );
                             });
                         ui.label(
                             egui::RichText::new("Select all & fix")
                                 .size(12.0)
-                                .color(TEXT_MUTED),
+                                .color(theme.text_muted),
                         );
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -911,10 +1022,10 @@ impl eframe::App for KeyboardLlmApp {
                                         egui::Button::new(
                                             egui::RichText::new("Reset")
                                                 .size(11.0)
-                                                .color(TEXT_MUTED),
+                                                .color(theme.text_muted),
                                         )
                                         .fill(egui::Color32::TRANSPARENT)
-                                        .stroke(egui::Stroke::new(1.0_f32, BORDER_SUBTLE))
+                                        .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
                                         .corner_radius(egui::CornerRadius::same(5))
                                         .min_size(egui::vec2(48.0, 22.0)),
                                     )
@@ -939,14 +1050,14 @@ impl eframe::App for KeyboardLlmApp {
                                     egui::Button::new(
                                         egui::RichText::new(change_label)
                                             .size(11.0)
-                                            .color(TEXT_PRIMARY),
+                                            .color(theme.text_primary),
                                     )
                                     .fill(if self.recording_hotkey {
-                                        BG_KEYCAP
+                                        theme.bg_keycap
                                     } else {
-                                        BTN_SEC_BG
+                                        theme.btn_sec_bg
                                     })
-                                    .stroke(egui::Stroke::new(1.0_f32, BORDER_MED))
+                                    .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
                                     .corner_radius(egui::CornerRadius::same(5))
                                     .min_size(egui::vec2(96.0, 22.0)),
                                 )
@@ -963,23 +1074,31 @@ impl eframe::App for KeyboardLlmApp {
                     });
 
                     if let Some(hint) = &self.hotkey_hint {
-                        ui.label(egui::RichText::new(hint).size(11.0).color(DOT_BUSY));
+                        ui.label(egui::RichText::new(hint).size(11.0).color(theme.dot_busy));
                     }
 
                     // Status notice line
                     if matches!(phase, AppPhase::Fixing { .. }) {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label(egui::RichText::new(&notice).size(11.5).color(TEXT_MUTED));
+                            ui.label(
+                                egui::RichText::new(&notice)
+                                    .size(11.5)
+                                    .color(theme.text_muted),
+                            );
                         });
                     } else if !matches!(phase, AppPhase::Downloading { .. } | AppPhase::Loading) {
-                        ui.label(egui::RichText::new(&notice).size(11.5).color(TEXT_MUTED));
+                        ui.label(
+                            egui::RichText::new(&notice)
+                                .size(11.5)
+                                .color(theme.text_muted),
+                        );
                     }
 
                     if let Some(err_msg) = error {
                         egui::Frame::new()
-                            .fill(ERROR_BG)
-                            .stroke(egui::Stroke::new(1.0_f32, ERROR_BORDER))
+                            .fill(theme.error_bg)
+                            .stroke(egui::Stroke::new(1.0_f32, theme.error_border))
                             .corner_radius(egui::CornerRadius::same(6))
                             .inner_margin(egui::Margin::symmetric(8, 6))
                             .show(ui, |ui| {
@@ -987,7 +1106,7 @@ impl eframe::App for KeyboardLlmApp {
                                     ui.label(
                                         egui::RichText::new(&err_msg)
                                             .size(11.5)
-                                            .color(ERROR_TEXT),
+                                            .color(theme.error_text),
                                     );
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
@@ -1003,7 +1122,7 @@ impl eframe::App for KeyboardLlmApp {
                 });
 
                 // 3. Model Source & Storage Folder Card
-                card_frame().show(ui, |ui| {
+                card_frame(&theme).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.spacing_mut().item_spacing = egui::vec2(8.0, 7.0);
 
@@ -1018,7 +1137,7 @@ impl eframe::App for KeyboardLlmApp {
                             egui::RichText::new("Model Download Link (Hugging Face GGUF)")
                                 .size(12.5)
                                 .strong()
-                                .color(TEXT_PRIMARY),
+                                .color(theme.text_primary),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let cache_label = match cached_size {
@@ -1031,7 +1150,7 @@ impl eframe::App for KeyboardLlmApp {
                             ui.label(
                                 egui::RichText::new(cache_label)
                                     .size(11.5)
-                                    .color(TEXT_MUTED),
+                                    .color(theme.text_muted),
                             );
                         });
                     });
@@ -1055,7 +1174,7 @@ impl eframe::App for KeyboardLlmApp {
                         ui.label(
                             egui::RichText::new(format!("File: {}", display_model_name(norm)))
                                 .size(11.0)
-                                .color(TEXT_MUTED),
+                                .color(theme.text_muted),
                         );
                     }
 
@@ -1082,10 +1201,12 @@ impl eframe::App for KeyboardLlmApp {
                             .add_enabled(
                                 can_click_dl,
                                 egui::Button::new(
-                                    egui::RichText::new(dl_label).size(12.0).color(TEXT_PRIMARY),
+                                    egui::RichText::new(dl_label)
+                                        .size(12.0)
+                                        .color(theme.text_primary),
                                 )
-                                .fill(BTN_SEC_BG)
-                                .stroke(egui::Stroke::new(1.0_f32, BORDER_MED))
+                                .fill(theme.btn_sec_bg)
+                                .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
                                 .corner_radius(egui::CornerRadius::same(6))
                                 .min_size(egui::vec2(130.0, 27.0)),
                             )
@@ -1110,10 +1231,10 @@ impl eframe::App for KeyboardLlmApp {
                                 egui::Button::new(
                                     egui::RichText::new("Reset Default")
                                         .size(12.0)
-                                        .color(TEXT_MUTED),
+                                        .color(theme.text_muted),
                                 )
                                 .fill(egui::Color32::TRANSPARENT)
-                                .stroke(egui::Stroke::new(1.0_f32, BORDER_SUBTLE))
+                                .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
                                 .corner_radius(egui::CornerRadius::same(6))
                                 .min_size(egui::vec2(96.0, 27.0)),
                             )
@@ -1137,7 +1258,7 @@ impl eframe::App for KeyboardLlmApp {
                             egui::RichText::new("Model Storage Folder")
                                 .size(12.5)
                                 .strong()
-                                .color(TEXT_PRIMARY),
+                                .color(theme.text_primary),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let tag = if is_custom_dir {
@@ -1145,7 +1266,7 @@ impl eframe::App for KeyboardLlmApp {
                             } else {
                                 "App folder (.exe)"
                             };
-                            ui.label(egui::RichText::new(tag).size(11.0).color(TEXT_MUTED));
+                            ui.label(egui::RichText::new(tag).size(11.0).color(theme.text_muted));
                         });
                     });
 
@@ -1177,10 +1298,10 @@ impl eframe::App for KeyboardLlmApp {
                                 egui::Button::new(
                                     egui::RichText::new("Browse...")
                                         .size(11.5)
-                                        .color(TEXT_PRIMARY),
+                                        .color(theme.text_primary),
                                 )
-                                .fill(BTN_SEC_BG)
-                                .stroke(egui::Stroke::new(1.0_f32, BORDER_MED))
+                                .fill(theme.btn_sec_bg)
+                                .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
                                 .corner_radius(egui::CornerRadius::same(6))
                                 .min_size(egui::vec2(74.0, 26.0)),
                             )
@@ -1209,10 +1330,10 @@ impl eframe::App for KeyboardLlmApp {
                                     egui::Button::new(
                                         egui::RichText::new("Reset")
                                             .size(11.5)
-                                            .color(TEXT_MUTED),
+                                            .color(theme.text_muted),
                                     )
                                     .fill(egui::Color32::TRANSPARENT)
-                                    .stroke(egui::Stroke::new(1.0_f32, BORDER_SUBTLE))
+                                    .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
                                     .corner_radius(egui::CornerRadius::same(6))
                                     .min_size(egui::vec2(52.0, 26.0)),
                                 )
@@ -1231,7 +1352,7 @@ impl eframe::App for KeyboardLlmApp {
                                 &mut self.config.minimize_to_tray_on_close,
                                 egui::RichText::new("Minimize to tray on close")
                                     .size(11.5)
-                                    .color(TEXT_MUTED),
+                                    .color(theme.text_muted),
                             )
                             .changed()
                         {
@@ -1244,7 +1365,7 @@ impl eframe::App for KeyboardLlmApp {
                                     egui::Button::new(
                                         egui::RichText::new("Hide to Tray")
                                             .size(11.5)
-                                            .color(TEXT_MUTED),
+                                            .color(theme.text_muted),
                                     )
                                     .frame(false),
                                 )
@@ -1261,12 +1382,17 @@ impl eframe::App for KeyboardLlmApp {
     }
 }
 
-fn draw_neutral_progress_bar(ui: &mut egui::Ui, frac: f32, indeterminate: bool) {
+fn draw_neutral_progress_bar(
+    ui: &mut egui::Ui,
+    theme: &ThemeColors,
+    frac: f32,
+    indeterminate: bool,
+) {
     let width = ui.available_width();
     let height = 10.0;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
     let radius = egui::CornerRadius::same(5);
-    ui.painter().rect_filled(rect, radius, BG_TRACK);
+    ui.painter().rect_filled(rect, radius, theme.bg_track);
 
     if indeterminate {
         ui.ctx().request_repaint();
@@ -1278,19 +1404,21 @@ fn draw_neutral_progress_bar(ui: &mut egui::Ui, frac: f32, indeterminate: bool) 
             egui::pos2(rect.min.x + pos, rect.min.y),
             egui::vec2(seg_w, height),
         );
-        ui.painter().rect_filled(fill_rect, radius, BTN_PRIMARY_BG);
+        ui.painter()
+            .rect_filled(fill_rect, radius, theme.accent_fill);
     } else if frac > 0.001 {
         let fill_w = (width * frac.clamp(0.0, 1.0)).max(height);
         let fill_rect =
             egui::Rect::from_min_size(rect.min, egui::vec2(fill_w.min(width), height));
-        ui.painter().rect_filled(fill_rect, radius, BTN_PRIMARY_BG);
+        ui.painter()
+            .rect_filled(fill_rect, radius, theme.accent_fill);
     }
 }
 
-fn card_frame() -> egui::Frame {
+fn card_frame(theme: &ThemeColors) -> egui::Frame {
     egui::Frame::new()
-        .fill(BG_CARD)
-        .stroke(egui::Stroke::new(1.0_f32, BORDER_SUBTLE))
+        .fill(theme.bg_card)
+        .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
         .corner_radius(egui::CornerRadius::same(10))
         .inner_margin(egui::Margin::same(14))
 }
@@ -1305,8 +1433,116 @@ fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
     egui::Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
 }
 
+fn draw_sun_icon(painter: &egui::Painter, center: egui::Pos2, radius: f32, color: egui::Color32) {
+    painter.circle_filled(center, radius * 0.43, color);
+    let inner_r = radius * 0.67;
+    let outer_r = radius;
+    let stroke = egui::Stroke::new(1.3_f32, color);
+    for i in 0..8 {
+        let angle = (i as f32) * std::f32::consts::FRAC_PI_4;
+        let (s, c) = angle.sin_cos();
+        let p0 = egui::pos2(center.x + c * inner_r, center.y + s * inner_r);
+        let p1 = egui::pos2(center.x + c * outer_r, center.y + s * outer_r);
+        painter.line_segment([p0, p1], stroke);
+    }
+}
+
+fn draw_moon_icon(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    radius: f32,
+    color: egui::Color32,
+    cutout_bg: egui::Color32,
+) {
+    painter.circle_filled(center, radius * 0.88, color);
+    let cutout_center = egui::pos2(center.x + radius * 0.34, center.y - radius * 0.22);
+    painter.circle_filled(cutout_center, radius * 0.78, cutout_bg);
+}
+
+fn theme_switch(ui: &mut egui::Ui, is_dark: bool, theme: &ThemeColors) -> egui::Response {
+    let desired_size = egui::vec2(52.0, 26.0);
+    let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let tooltip = if is_dark {
+        "Switch to Light Mode"
+    } else {
+        "Switch to Dark Mode"
+    };
+    let response = response.on_hover_text(tooltip);
+
+    let t = ui.ctx().animate_bool_with_time(response.id, is_dark, 0.16);
+
+    let track_light = egui::Color32::WHITE;
+    let track_dark = egui::Color32::from_rgb(44, 42, 39); // #2C2A27
+    let border_light = egui::Color32::from_rgb(200, 196, 190); // #C8C4BE
+    let border_dark = egui::Color32::from_rgb(78, 74, 69); // #4E4A45
+
+    let track_fill = lerp_color(track_light, track_dark, t);
+    let mut track_border = lerp_color(border_light, border_dark, t);
+    if response.hovered() {
+        track_border = lerp_color(track_border, theme.text_muted, 0.35);
+    }
+
+    let radius = egui::CornerRadius::same(13);
+    let painter = ui.painter();
+    painter.rect_filled(rect, radius, track_fill);
+    painter.rect_stroke(
+        rect,
+        radius,
+        egui::Stroke::new(1.2_f32, track_border),
+        egui::StrokeKind::Inside,
+    );
+
+    let cy = rect.center().y;
+    let left_slot = egui::pos2(rect.left() + 13.0, cy);
+    let right_slot = egui::pos2(rect.right() - 13.0, cy);
+
+    if t > 0.05 {
+        let sun_muted = lerp_color(track_fill, egui::Color32::from_rgb(140, 134, 126), t);
+        draw_sun_icon(painter, left_slot, 5.4, sun_muted);
+    }
+    if t < 0.95 {
+        let moon_muted = lerp_color(track_fill, egui::Color32::from_rgb(158, 152, 144), 1.0 - t);
+        draw_moon_icon(painter, right_slot, 5.2, moon_muted, track_fill);
+    }
+
+    let knob_x = egui::lerp(left_slot.x..=right_slot.x, t);
+    let knob_center = egui::pos2(knob_x, cy);
+    painter.circle_filled(
+        egui::pos2(knob_center.x, knob_center.y + 1.2),
+        10.2,
+        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 20),
+    );
+    painter.circle_filled(
+        egui::pos2(knob_center.x, knob_center.y + 0.6),
+        9.9,
+        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 30),
+    );
+    let knob_fill = egui::Color32::WHITE;
+    painter.circle_filled(knob_center, 9.8, knob_fill);
+    painter.circle_stroke(
+        knob_center,
+        9.8,
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(214, 210, 203)),
+    );
+
+    let dark_icon = egui::Color32::from_rgb(34, 32, 30); // #22201E
+    if t < 0.5 {
+        let weight = (1.0 - t * 2.0).clamp(0.0, 1.0);
+        let icon_col = lerp_color(knob_fill, dark_icon, weight);
+        draw_sun_icon(painter, knob_center, 5.3, icon_col);
+    } else {
+        let weight = (t * 2.0 - 1.0).clamp(0.0, 1.0);
+        let icon_col = lerp_color(knob_fill, dark_icon, weight);
+        draw_moon_icon(painter, knob_center, 5.2, icon_col, knob_fill);
+    }
+
+    response
+}
+
 fn draw_pill_switch(
     ui: &egui::Ui,
+    theme: &ThemeColors,
     rect: egui::Rect,
     id: egui::Id,
     is_on: bool,
@@ -1317,16 +1553,16 @@ fn draw_pill_switch(
 
     let track_off = egui::Color32::WHITE;
     let track_on = egui::Color32::from_rgb(77, 150, 98); // #4D9662
-    let border_off = egui::Color32::from_rgb(200, 196, 190); // #C8C4BE
+    let border_off = theme.power_border_off;
     let border_on = egui::Color32::from_rgb(67, 133, 86); // #438556
 
     let mut track_fill = lerp_color(track_off, track_on, t);
     let mut track_border = lerp_color(border_off, border_on, t);
     if !enabled {
-        track_fill = lerp_color(track_fill, BG_TRACK, 0.45);
-        track_border = lerp_color(track_border, BORDER_MED, 0.45);
+        track_fill = lerp_color(track_fill, theme.bg_track, 0.45);
+        track_border = lerp_color(track_border, theme.border_med, 0.45);
     } else if hovered {
-        track_border = lerp_color(track_border, TEXT_MUTED, 0.25);
+        track_border = lerp_color(track_border, theme.text_muted, 0.25);
     }
 
     let radius = egui::CornerRadius::same(15);
@@ -1366,6 +1602,7 @@ fn draw_pill_switch(
 
 fn power_switch_row(
     ui: &mut egui::Ui,
+    theme: &ThemeColors,
     label: &str,
     is_on: bool,
     enabled: bool,
@@ -1386,11 +1623,11 @@ fn power_switch_row(
     };
 
     let (box_fill, box_border) = if enabled && response.is_pointer_button_down_on() {
-        (egui::Color32::from_rgb(232, 229, 223), BORDER_MED)
+        (theme.bg_callout_active, theme.border_med)
     } else if enabled && response.hovered() {
-        (egui::Color32::from_rgb(240, 238, 234), BORDER_MED)
+        (theme.bg_callout_hover, theme.border_med)
     } else {
-        (BG_CALLOUT, BORDER_SUBTLE)
+        (theme.bg_callout, theme.border_subtle)
     };
 
     let box_radius = egui::CornerRadius::same(8);
@@ -1416,7 +1653,11 @@ fn power_switch_row(
         ui.put(spinner_rect, egui::Spinner::new().size(15.0));
     }
 
-    let text_color = if enabled { TEXT_PRIMARY } else { TEXT_MUTED };
+    let text_color = if enabled {
+        theme.text_primary
+    } else {
+        theme.text_muted
+    };
     let avail_text_w = (switch_rect.left() - 10.0 - text_left).max(40.0);
     let galley = egui::WidgetText::from(
         egui::RichText::new(label)
@@ -1433,44 +1674,67 @@ fn power_switch_row(
     let text_pos = egui::pos2(text_left, rect.center().y - galley.size().y * 0.5);
     ui.painter().galley(text_pos, galley, text_color);
 
-    draw_pill_switch(ui, switch_rect, response.id, is_on, enabled, response.hovered());
+    draw_pill_switch(
+        ui,
+        theme,
+        switch_rect,
+        response.id,
+        is_on,
+        enabled,
+        response.hovered(),
+    );
 
     response
 }
 
-fn secondary_button(ui: &mut egui::Ui, text: &str, height: f32) -> egui::Response {
+fn secondary_button(
+    ui: &mut egui::Ui,
+    theme: &ThemeColors,
+    text: &str,
+    height: f32,
+) -> egui::Response {
     let w = ui.available_width();
     let btn = egui::Button::new(
         egui::RichText::new(text)
             .size(14.0)
             .strong()
-            .color(TEXT_PRIMARY),
+            .color(theme.text_primary),
     )
-    .fill(BTN_SEC_BG)
-    .stroke(egui::Stroke::new(1.0_f32, BORDER_MED))
+    .fill(theme.btn_sec_bg)
+    .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
     .corner_radius(egui::CornerRadius::same(8))
     .min_size(egui::vec2(w, height));
     ui.scope(|ui| {
-        ui.visuals_mut().widgets.hovered.bg_fill = BTN_SEC_HOVER;
-        ui.visuals_mut().widgets.active.bg_fill = BTN_SEC_BG;
+        ui.visuals_mut().widgets.hovered.bg_fill = theme.btn_sec_hover;
+        ui.visuals_mut().widgets.active.bg_fill = theme.btn_sec_bg;
         ui.add(btn)
     })
     .inner
 }
 
-fn apply_neutral_visuals(ctx: &egui::Context) {
-    let mut v = egui::Visuals::light();
-    v.window_fill = BG_WINDOW;
-    v.panel_fill = BG_WINDOW;
-    v.extreme_bg_color = BG_INPUT;
-    v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, TEXT_PRIMARY);
-    v.widgets.inactive.bg_fill = BG_INPUT;
-    v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, BORDER_MED);
+fn apply_theme_visuals(ctx: &egui::Context, dark_mode: bool) {
+    let theme = ThemeColors::for_mode(dark_mode);
+    let mut v = if dark_mode {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
+    v.window_fill = theme.bg_window;
+    v.panel_fill = theme.bg_window;
+    v.extreme_bg_color = theme.bg_input;
+    v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, theme.text_primary);
+    v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, theme.border_subtle);
+    v.widgets.inactive.bg_fill = theme.bg_input;
+    v.widgets.inactive.weak_bg_fill = theme.bg_input;
+    v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, theme.text_primary);
+    v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, theme.border_med);
     v.widgets.inactive.corner_radius = egui::CornerRadius::same(6);
-    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, BTN_PRIMARY_BG);
-    v.widgets.active.bg_stroke = egui::Stroke::new(1.2_f32, BTN_PRIMARY_BG);
-    v.selection.bg_fill = egui::Color32::from_rgb(214, 211, 205);
-    v.selection.stroke = egui::Stroke::new(1.0_f32, BTN_PRIMARY_BG);
+    v.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, theme.text_primary);
+    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, theme.accent_fill);
+    v.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, theme.text_primary);
+    v.widgets.active.bg_stroke = egui::Stroke::new(1.2_f32, theme.accent_fill);
+    v.selection.bg_fill = theme.selection_bg;
+    v.selection.stroke = egui::Stroke::new(1.0_f32, theme.accent_fill);
     ctx.set_visuals(v);
 }
 

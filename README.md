@@ -41,6 +41,8 @@ No installation, Python, or external dependencies required — just download and
 - **Full-Box Clickable On / Off Switch with VRAM Unloading**:
   - Clean neutral UI featuring an animated white (Off) / green (On) toggle pill where clicking anywhere inside the switch row toggles the assistant.
   - Turning **Off** unregisters the global hotkey and unloads the model + KV cache to free GPU VRAM immediately. Turning **On** loads the model, warms up Vulkan GPU shaders, and activates the global hotkey.
+- **Dark & Light Mode Switch**:
+  - Top-right sun (left / Light Mode) and moon (right / Dark Mode) pill switch next to the status badge. Defaults to **Dark Mode** on first launch, syncs the native Windows title bar, and saves your preference in `settings.json`.
 - **Interactive Hugging Face GGUF Downloader**:
   - First-run and model-switching download panel showing progress percentage, transferred bytes, download speed (MB/s), and ETA.
   - Supports **Pause / Cancel Download** and **Resume** via `.gguf.part` partial files and HTTP `Range` requests, validates the `GGUF` magic header (`b"GGUF"`), automatically converts Hugging Face `/blob/` links to `/resolve/` URLs, and mirrors progress onto the Windows Taskbar button.
