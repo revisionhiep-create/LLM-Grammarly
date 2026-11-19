@@ -39,7 +39,7 @@ fn acquire_single_instance() -> Option<InstanceMutex> {
             CreateMutexW(None, false, w!("Local\\KeyboardLLM_SingleInstance_Mutex")).ok()?;
         if GetLastError() == ERROR_ALREADY_EXISTS {
             let _ = CloseHandle(handle);
-            if let Ok(hwnd) = FindWindowW(None, w!("Keyboard LLM")) {
+            if let Ok(hwnd) = FindWindowW(None, w!("LLM Grammarly")) {
                 if !hwnd.0.is_null() {
                     let _ = ShowWindow(hwnd, SW_SHOW);
                     let _ = ShowWindow(hwnd, SW_RESTORE);
@@ -76,7 +76,7 @@ fn run_self_test() -> Result<()> {
     let model_dir = parse_self_test_model_dir();
     let model_path = config::local_model_path(&model_dir, &url);
 
-    println!("=== Keyboard-LLM Self-Test ===");
+    println!("=== LLM Grammarly Self-Test ===");
     println!("Model URL : {url}");
     println!("Storage   : {}", model_dir.display());
     println!("Model file: {}", model_path.display());
@@ -176,7 +176,7 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Keyboard LLM")
+            .with_title("LLM Grammarly")
             .with_inner_size(initial_size)
             .with_min_inner_size([470.0, 565.0])
             .with_icon(icon::app_viewport_icon(false)),
@@ -184,7 +184,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "Keyboard LLM",
+        "LLM Grammarly",
         options,
         Box::new(|cc| Ok(Box::new(app::KeyboardLlmApp::new(cc)))),
     )

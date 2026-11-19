@@ -96,12 +96,12 @@ fn sync_tray_on_ui_thread(
         let tip = match progress {
             TaskbarProgress::Determinate { current, total } if total > 0 => {
                 let pct = ((current.saturating_mul(100)) / total).min(100);
-                format!("Keyboard LLM — Downloading ({pct}%)")
+                format!("LLM Grammarly — Downloading ({pct}%)")
             }
-            TaskbarProgress::Indeterminate if is_busy => "Keyboard LLM — Loading...".to_string(),
-            _ if is_busy => "Keyboard LLM — Working...".to_string(),
-            _ if is_on => format!("Keyboard LLM — On ({hotkey_label})"),
-            _ => "Keyboard LLM — Off".to_string(),
+            TaskbarProgress::Indeterminate if is_busy => "LLM Grammarly — Loading...".to_string(),
+            _ if is_busy => "LLM Grammarly — Working...".to_string(),
+            _ if is_on => format!("LLM Grammarly — On ({hotkey_label})"),
+            _ => "LLM Grammarly — Off".to_string(),
         };
         let _ = ui.tray.set_tooltip(Some(tip));
 
@@ -173,7 +173,7 @@ fn build_thumb_buttons(is_on: bool, is_busy: bool) -> [THUMBBUTTON; 2] {
     quit.iId = BTN_QUIT_ID;
     quit.iBitmap = 2;
     quit.dwFlags = THBF_ENABLED;
-    fill_tip(&mut quit.szTip, "Quit Keyboard LLM");
+    fill_tip(&mut quit.szTip, "Quit LLM Grammarly");
 
     [toggle, quit]
 }
@@ -361,7 +361,7 @@ impl ShellBridge {
         let tray_icon_img = icon::tray_icon_image(false)?;
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(tray_menu))
-            .with_tooltip("Keyboard LLM — Off")
+            .with_tooltip("LLM Grammarly — Off")
             .with_icon(tray_icon_img)
             .build()
             .map_err(|e| anyhow!("Failed to create tray icon: {e}"))?;

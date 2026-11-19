@@ -856,7 +856,7 @@ impl eframe::App for KeyboardLlmApp {
                     ui.image((tex.id(), egui::vec2(26.0, 26.0)));
                     ui.add_space(4.0);
                     ui.label(
-                        egui::RichText::new("Keyboard LLM")
+                        egui::RichText::new("LLM Grammarly")
                             .size(17.5)
                             .strong()
                             .color(theme.text_primary),

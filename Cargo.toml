@@ -35,9 +35,9 @@ ico = "0.4"
 winresource = "0.1"
 
 [package.metadata.winresource]
-FileDescription = "Keyboard LLM"
-ProductName = "Keyboard LLM"
-OriginalFilename = "keyboard-llm.exe"
+FileDescription = "LLM Grammarly"
+ProductName = "LLM Grammarly"
+OriginalFilename = "LLM-Grammarly.exe"
 
 [profile.release]
 opt-level = 3
