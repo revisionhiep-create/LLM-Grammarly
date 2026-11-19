@@ -107,6 +107,7 @@ pub struct AppConfig {
     pub toggle_power_hotkey: Option<HotkeyBinding>,
     pub toggle_highlight_hotkey: Option<HotkeyBinding>,
     pub minimize_to_tray_on_close: bool,
+    pub show_notifications: bool,
     pub dark_mode: bool,
     pub window: Option<WindowState>,
 }
@@ -121,6 +122,7 @@ impl Default for AppConfig {
             toggle_power_hotkey: None,
             toggle_highlight_hotkey: None,
             minimize_to_tray_on_close: false,
+            show_notifications: true,
             dark_mode: true,
             window: None,
         }
@@ -399,5 +401,24 @@ mod tests {
         assert!(decoded.fix_highlighted_only);
         assert_eq!(decoded.toggle_power_hotkey, cfg.toggle_power_hotkey);
         assert_eq!(decoded.toggle_highlight_hotkey, cfg.toggle_highlight_hotkey);
+    }
+
+    #[test]
+    fn notifications_defaults_true_and_roundtrips() {
+        let def = AppConfig::default();
+        assert!(def.show_notifications);
+
+        let legacy_json =
+            r#"{"model_url":"https://huggingface.co/a/b/resolve/main/m.gguf"}"#;
+        let decoded_legacy: AppConfig = serde_json::from_str(legacy_json).unwrap();
+        assert!(decoded_legacy.show_notifications);
+
+        for enabled in [false, true] {
+            let mut cfg = AppConfig::default();
+            cfg.show_notifications = enabled;
+            let encoded = serde_json::to_string(&cfg).unwrap();
+            let decoded: AppConfig = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded.show_notifications, enabled);
+        }
     }
 }

@@ -18,11 +18,16 @@ pub fn app_viewport_icon(active: bool) -> egui::IconData {
     }
 }
 
-pub fn tray_icon_image(active: bool) -> anyhow::Result<tray_icon::Icon> {
+pub fn tray_hicon(active: bool) -> windows::core::Result<HICON> {
     let size = 32u32;
     let rgba = icon_render::render_keyboard_rgba(size, active);
-    tray_icon::Icon::from_rgba(rgba, size, size)
-        .map_err(|e| anyhow::anyhow!("Failed to build tray icon: {e}"))
+    rgba_to_hicon(&rgba, size, size)
+}
+
+pub fn notification_hicon(active: bool) -> windows::core::Result<HICON> {
+    let size = 64u32;
+    let rgba = icon_render::render_keyboard_rgba(size, active);
+    rgba_to_hicon(&rgba, size, size)
 }
 
 pub fn thumb_power_hicon(is_on: bool) -> windows::core::Result<HICON> {

@@ -54,6 +54,7 @@ No installation, Python, or external dependencies required — just download and
   - Procedurally rendered neutral keyboard icon embedded into PE executable resources (`assets/icon.ico`), window chrome, system tray, and taskbar.
   - **Windows Taskbar Hover Toolbar** (`ITaskbarList3`) with **Turn On / Turn Off** and **Quit** thumbnail buttons.
   - **System Tray Icon** with **Show Window**, **Turn On / Turn Off**, and **Quit**, plus optional **Minimize to tray on close** and **Hide to Tray**.
+  - **Silent Windows Notifications**: Displays a silent native Windows notification whenever **On / Off** or **Highlight mode** is toggled (via hotkey, tray, taskbar, or UI), controlled by a **Notifications** checkbox in the footer (enabled by default and saved in `settings.json`).
   - **Single-Instance Guard** that brings the existing window to focus if launched a second time.
 - **Multi-Monitor & Per-Monitor DPI Aware**:
   - Persists window size, virtual-screen coordinates, monitor placement, and maximized state in `%APPDATA%\keyboard-llm\config\settings.json`, clamps safely onto visible monitors if a display is disconnected, and scales cleanly across displays with different resolutions/DPI settings.
@@ -73,6 +74,7 @@ No installation, Python, or external dependencies required — just download and
    - **Model URL**: Paste any Hugging Face `.gguf` URL (`/blob/` or `/resolve/`), then click **Download Model** (or **Reset Default** to return to the default model).
    - **Model Folder**: Click **Browse...** to choose another storage folder or **Reset** to use the `.exe` folder again.
    - **Tray Behavior**: Enable **Minimize to tray on close** or click **Hide to Tray** to keep the app running quietly in the background.
+   - **Notifications**: Toggle the **Notifications** checkbox in the footer to enable or disable silent Windows notifications on **On / Off** and **Highlight mode** changes (enabled by default).
    - **Settings File**: Saved automatically at `%APPDATA%\keyboard-llm\config\settings.json`.
 
 ---
@@ -120,7 +122,7 @@ LLM-Grammarly/
     ├── downloader.rs     # Streaming GGUF downloader with HTTP Range resume & magic validation
     ├── hotkey.rs         # Win32 RegisterHotKey loop, SendInput copy/paste, clipboard restore
     ├── llm.rs            # Embedded llama-cpp-2 worker (Vulkan GPU/CPU fallback, warmup, VRAM unload)
-    ├── taskbar.rs        # Win32 ITaskbarList3 progress/thumbbar, tray menu, folder picker, monitor clamping
+    ├── taskbar.rs        # Win32 ITaskbarList3 progress/thumbbar, native tray icon & notifications, folder picker, monitor clamping
     ├── icon.rs           # Converts rendered RGBA icon buffers to egui/tray/Win32 HICON formats
     └── icon_render.rs    # Pure-Rust anti-aliased procedural icon renderer shared with build.rs
 ```

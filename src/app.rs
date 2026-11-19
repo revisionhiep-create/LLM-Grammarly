@@ -349,6 +349,7 @@ pub struct KeyboardLlmApp {
     shared_dir: Arc<Mutex<PathBuf>>,
     shared_hotkey: Arc<Mutex<HotkeyBinding>>,
     shared_highlighted_only: Arc<AtomicBool>,
+    shared_show_notifications: Arc<AtomicBool>,
     shared_recording: Arc<AtomicBool>,
     state: Arc<Mutex<SharedState>>,
     ctrl_tx: Sender<CtrlCmd>,
@@ -381,6 +382,7 @@ impl KeyboardLlmApp {
         let shared_dir = Arc::new(Mutex::new(effective_dir));
         let shared_hotkey = Arc::new(Mutex::new(config.hotkey));
         let shared_highlighted_only = Arc::new(AtomicBool::new(config.fix_highlighted_only));
+        let shared_show_notifications = Arc::new(AtomicBool::new(config.show_notifications));
         let shared_recording = Arc::new(AtomicBool::new(false));
         let state = Arc::new(Mutex::new(SharedState::default()));
 
@@ -432,7 +434,6 @@ impl KeyboardLlmApp {
             ShellBridge::install(
                 hwnd_raw,
                 config.hotkey.display_label(),
-                cc.egui_ctx.clone(),
                 Arc::new(move |cmd| {
                     let msg = match cmd {
                         ShellCommand::ToggleOnOff => CtrlCmd::ToggleOnOff,
@@ -468,6 +469,7 @@ impl KeyboardLlmApp {
         let dir_ctrl = Arc::clone(&shared_dir);
         let hk_ctrl = Arc::clone(&shared_hotkey);
         let hl_ctrl = Arc::clone(&shared_highlighted_only);
+        let notif_ctrl = Arc::clone(&shared_show_notifications);
         let init_power_hk = config.toggle_power_hotkey;
         let init_hl_hk = config.toggle_highlight_hotkey;
         let tx_ctrl = ctrl_tx.clone();
@@ -487,6 +489,7 @@ impl KeyboardLlmApp {
                     init_power_hk,
                     init_hl_hk,
                     hl_ctrl,
+                    notif_ctrl,
                     llm,
                     hotkey,
                     shell_ctrl,
@@ -503,6 +506,7 @@ impl KeyboardLlmApp {
             shared_dir,
             shared_hotkey,
             shared_highlighted_only,
+            shared_show_notifications,
             shared_recording,
             state,
             ctrl_tx,
@@ -1136,6 +1140,11 @@ impl eframe::App for KeyboardLlmApp {
                         self.shared_highlighted_only
                             .store(self.config.fix_highlighted_only, Ordering::Relaxed);
                         self.save_current_config();
+                        if self.config.show_notifications {
+                            if let Some(sh) = self.shell.as_ref() {
+                                notify_highlight_mode(sh, self.config.fix_highlighted_only, is_on);
+                            }
+                        }
                     }
 
                     // Hotkey rows (Fix, On / Off toggle, Highlight mode toggle)
@@ -1512,6 +1521,25 @@ impl eframe::App for KeyboardLlmApp {
                             )
                             .changed()
                         {
+                            self.save_current_config();
+                        }
+
+                        ui.add_space(10.0);
+
+                        if ui
+                            .checkbox(
+                                &mut self.config.show_notifications,
+                                egui::RichText::new("Notifications")
+                                    .size(11.5)
+                                    .color(theme.text_muted),
+                            )
+                            .on_hover_text(
+                                "Show silent Windows notifications when On/Off or Highlight mode changes",
+                            )
+                            .changed()
+                        {
+                            self.shared_show_notifications
+                                .store(self.config.show_notifications, Ordering::Relaxed);
                             self.save_current_config();
                         }
 
@@ -2031,6 +2059,19 @@ fn apply_theme_visuals(ctx: &egui::Context, dark_mode: bool) {
     ctx.set_visuals(v);
 }
 
+fn notify_highlight_mode(shell: &ShellBridge, highlighted_only: bool, app_is_on: bool) {
+    let (title, body) = match (highlighted_only, app_is_on) {
+        (true, true) => ("Highlight Mode — On", "Only highlighted text will be fixed"),
+        (true, false) => (
+            "Highlight Mode — On",
+            "Only highlighted text will be fixed · App is off",
+        ),
+        (false, true) => ("Highlight Mode — Off", "Select all & fix mode"),
+        (false, false) => ("Highlight Mode — Off", "Select all & fix mode · App is off"),
+    };
+    shell.notify(title, body, highlighted_only);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn controller_loop(
     rx: Receiver<CtrlCmd>,
@@ -2042,6 +2083,7 @@ fn controller_loop(
     initial_power_hotkey: Option<HotkeyBinding>,
     initial_highlight_hotkey: Option<HotkeyBinding>,
     shared_highlighted_only: Arc<AtomicBool>,
+    shared_show_notifications: Arc<AtomicBool>,
     mut llm: Arc<LlmHandle>,
     mut hotkey: HotkeyController,
     shell: Option<ShellBridge>,
@@ -2224,6 +2266,11 @@ fn controller_loop(
                     s.notice = "VRAM free".to_string();
                 }
                 sync_shell(false, false, Some(TaskbarProgress::None));
+                if shared_show_notifications.load(Ordering::Relaxed) {
+                    if let Some(sh) = shell.as_ref() {
+                        sh.notify("LLM Grammarly — Off", "Turned off · VRAM free", false);
+                    }
+                }
             }
             CtrlCmd::DownloadModel(raw_url, storage_dir) => {
                 let (is_on, is_busy) = {
@@ -2455,6 +2502,21 @@ fn controller_loop(
                                 );
                             }
                             sync_shell(true, false, Some(TaskbarProgress::None));
+                            if shared_show_notifications.load(Ordering::Relaxed) {
+                                if let Some(sh) = shell.as_ref() {
+                                    let hl = shared_highlighted_only.load(Ordering::Relaxed);
+                                    let mode = if hl {
+                                        "Highlighted text only"
+                                    } else {
+                                        "Select all & fix"
+                                    };
+                                    sh.notify(
+                                        "LLM Grammarly — On",
+                                        format!("Ready ({}) · {mode}", active_hk.display_label()),
+                                        true,
+                                    );
+                                }
+                            }
                         }
                         Err(e) => {
                             llm.unload();
@@ -2549,7 +2611,7 @@ fn controller_loop(
                 HotkeyEvent::ToggleHighlightRequested => {
                     let next = !shared_highlighted_only.load(Ordering::Relaxed);
                     shared_highlighted_only.store(next, Ordering::Relaxed);
-                    {
+                    let is_on = {
                         let mut s = state.lock().unwrap();
                         s.highlight_sync = Some(next);
                         let mode_msg = if next {
@@ -2564,6 +2626,12 @@ fn controller_loop(
                             AppPhase::Off => format!("{mode_msg} · VRAM free"),
                             _ => mode_msg.to_string(),
                         };
+                        s.phase.is_on()
+                    };
+                    if shared_show_notifications.load(Ordering::Relaxed) {
+                        if let Some(sh) = shell.as_ref() {
+                            notify_highlight_mode(sh, next, is_on);
+                        }
                     }
                     ctx.request_repaint();
                 }
