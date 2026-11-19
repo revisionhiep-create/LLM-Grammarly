@@ -6,6 +6,14 @@ Press a system-wide hotkey in any Windows text field to fix typos, spelling, gra
 
 ---
 
+## Demo Video
+
+[![Watch the LLM-Grammarly Demo on YouTube](https://img.youtube.com/vi/Oq4OxtV_xik/maxresdefault.jpg)](https://www.youtube.com/watch?v=Oq4OxtV_xik)
+
+▶ **[Watch the 1-minute demo on YouTube](https://www.youtube.com/watch?v=Oq4OxtV_xik)** — GitHub download & unblock, one-click Qwen 3.5 model setup, Vulkan GPU acceleration, Highlight Mode, and live Discord demo.
+
+---
+
 ## Download & Launch on Windows (File Explorer)
 
 No installation, Python, or external dependencies required — just download and run:
