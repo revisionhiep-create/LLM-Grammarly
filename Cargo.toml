@@ -1,0 +1,45 @@
+[package]
+name = "keyboard-llm"
+version = "1.0.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+anyhow = "1"
+directories = "6"
+eframe = "0.31"
+llama-cpp-2 = { version = "0.1.161", features = ["vulkan"] }
+raw-window-handle = "0.6"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "native-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tray-icon = "0.21"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Threading",
+    "Win32_UI_Controls",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+ico = "0.4"
+winresource = "0.1"
+
+[package.metadata.winresource]
+FileDescription = "Keyboard LLM"
+ProductName = "Keyboard LLM"
+OriginalFilename = "keyboard-llm.exe"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = "symbols"

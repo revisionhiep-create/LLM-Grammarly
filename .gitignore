@@ -1,0 +1,16 @@
+# Rust build outputs
+/target/
+**/*.rs.bk
+
+# Local LLM model files and partial downloads
+*.gguf
+*.gguf.part
+
+# Compiled Windows binaries & debug symbols (publish via GitHub Releases instead)
+*.exe
+*.pdb
+
+# Logs & OS metadata
+*.log
+.DS_Store
+Thumbs.db
