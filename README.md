@@ -35,12 +35,14 @@ No installation, Python, or external dependencies required — just download and
 
 - **Single Self-Contained Windows Executable**: Compiles into one portable `.exe` (`LLM-Grammarly.exe`) with `llama.cpp` compiled directly in, linking only standard Windows OS / MSVC runtime libraries and `vulkan-1.dll`.
 - **Default Uncensored Local Model**: Ships configured for `HauhauCS/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive` (`Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf`, ~2.52 GB) running in fast non-thinking mode (`<think>\n\n</think>\n\n`), preserving original meaning, tone, names, slang, profanity, and line breaks. Also supports custom GGUF models via embedded chat templates or ChatML fallback.
-- **Customizable System-Wide Hotkey**:
-  - Defaults to **`Ctrl + Q`**; rebind live via **Change Hotkey** / **Reset** to any modifier combo (`Ctrl` / `Alt` / `Shift` / `Win` + key) or standalone function key (`F1`–`F12`).
-  - Waits for physical key/modifier release before simulating `Ctrl+A` → `Ctrl+C`, runs local LLM correction, pastes the result with `Ctrl+V` only if changed, polls `GetClipboardSequenceNumber` adaptively, and restores your previous clipboard text afterward.
-- **Full-Box Clickable On / Off Switch with VRAM Unloading**:
-  - Clean neutral UI featuring an animated white (Off) / green (On) toggle pill where clicking anywhere inside the switch row toggles the assistant.
-  - Turning **Off** unregisters the global hotkey and unloads the model + KV cache to free GPU VRAM immediately. Turning **On** loads the model, warms up Vulkan GPU shaders, and activates the global hotkey.
+- **Customizable System-Wide Hotkeys**:
+  - **Fix Text**: Defaults to **`Ctrl + Q`**; rebind live via **Change Hotkey** / **Reset** to any modifier combo (`Ctrl` / `Alt` / `Shift` + key) or standalone function key (`F1`–`F12`).
+  - **Optional Mode & Power Toggle Hotkeys**: Assign global hotkeys for **On / Off** and **Highlight mode** (`No hotkey set` by default; assignable via **Set Hotkey** / **Change Hotkey**, removable via **Clear**, and saved in `settings.json`).
+  - Waits for physical key/modifier release before copying (`Ctrl+A` → `Ctrl+C`, or `Ctrl+C` only in highlight mode), runs local LLM correction, pastes the result with `Ctrl+V` only if changed, polls `GetClipboardSequenceNumber` adaptively, and restores your previous clipboard text afterward.
+- **Full-Box Clickable On / Off & Highlighted-Only Switches**:
+  - Clean neutral UI featuring animated white (Off) / green (On) toggle pills where clicking anywhere inside the switch row toggles the setting.
+  - **Turn On / Turn Off**: Turning **Off** unregisters the fix hotkey and unloads the model + KV cache to free GPU VRAM immediately. Turning **On** loads the model, warms up Vulkan GPU shaders, and activates the fix hotkey (optional **On / Off** and **Highlight mode** hotkeys stay active even while Off).
+  - **Fix highlighted text only**: Located directly beneath Turn On / Turn Off (defaults to **Off** and saved in `settings.json`). When **On**, skips `Ctrl+A` so only your currently highlighted selection is corrected and replaced.
 - **Dark & Light Mode Switch**:
   - Top-right sun (left / Light Mode) and moon (right / Dark Mode) pill switch next to the status badge. Defaults to **Dark Mode** on first launch, syncs the native Windows title bar, and saves your preference in `settings.json`.
 - **Interactive Hugging Face GGUF Downloader**:
@@ -63,11 +65,11 @@ No installation, Python, or external dependencies required — just download and
 1. **Turn On / Turn Off**:
    - Click anywhere inside the top **Turn On / Turn Off** toggle box (or use the system tray icon menu / Windows taskbar hover buttons) to load or unload the model from GPU VRAM and enable or disable the global hotkey.
 2. **Fix Text Anywhere**:
-   - Place your cursor in any text input and press your hotkey (default **`Ctrl + Q`**) to select and fix the text in place.
+   - Place your cursor in any text input and press your fix hotkey (default **`Ctrl + Q`**) to select and fix all text in place, or turn on **Fix highlighted text only** to skip `Ctrl+A` and correct only highlighted text.
 3. **Pause, Resume, or Switch Models**:
    - You can click **Pause / Cancel Download** mid-download (keeping the `.gguf.part` file to resume later via **Resume Download** / **Resume Download & Turn On**) or click **Discard partial file**.
-4. **Customize Hotkey, Model, or Storage Folder**:
-   - **Hotkey**: Click **Change Hotkey**, press your desired shortcut (or `F1`–`F12`), or click **Reset** to restore `Ctrl + Q`.
+4. **Customize Hotkeys, Model, or Storage Folder**:
+   - **Hotkeys**: Click **Change Hotkey** on the fix row (or **Reset** to restore `Ctrl + Q`), and optionally click **Set Hotkey** / **Clear** on the **On / Off** and **Highlight mode** rows (`No hotkey set` by default).
    - **Model URL**: Paste any Hugging Face `.gguf` URL (`/blob/` or `/resolve/`), then click **Download Model** (or **Reset Default** to return to the default model).
    - **Model Folder**: Click **Browse...** to choose another storage folder or **Reset** to use the `.exe` folder again.
    - **Tray Behavior**: Enable **Minimize to tray on close** or click **Hide to Tray** to keep the app running quietly in the background.

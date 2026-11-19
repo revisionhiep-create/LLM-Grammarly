@@ -103,6 +103,9 @@ pub struct AppConfig {
     pub model_url: String,
     pub model_dir: Option<String>,
     pub hotkey: HotkeyBinding,
+    pub fix_highlighted_only: bool,
+    pub toggle_power_hotkey: Option<HotkeyBinding>,
+    pub toggle_highlight_hotkey: Option<HotkeyBinding>,
     pub minimize_to_tray_on_close: bool,
     pub dark_mode: bool,
     pub window: Option<WindowState>,
@@ -114,6 +117,9 @@ impl Default for AppConfig {
             model_url: DEFAULT_MODEL_URL.to_string(),
             model_dir: None,
             hotkey: HotkeyBinding::default(),
+            fix_highlighted_only: false,
+            toggle_power_hotkey: None,
+            toggle_highlight_hotkey: None,
             minimize_to_tray_on_close: false,
             dark_mode: true,
             window: None,
@@ -160,6 +166,16 @@ pub fn load_config() -> AppConfig {
     }
     if !cfg.hotkey.is_valid() {
         cfg.hotkey = HotkeyBinding::default();
+    }
+    if let Some(hk) = cfg.toggle_power_hotkey {
+        if !hk.is_valid() || hk == cfg.hotkey {
+            cfg.toggle_power_hotkey = None;
+        }
+    }
+    if let Some(hk) = cfg.toggle_highlight_hotkey {
+        if !hk.is_valid() || hk == cfg.hotkey || Some(hk) == cfg.toggle_power_hotkey {
+            cfg.toggle_highlight_hotkey = None;
+        }
     }
     cfg
 }
@@ -345,5 +361,43 @@ mod tests {
             let decoded: AppConfig = serde_json::from_str(&encoded).unwrap();
             assert_eq!(decoded.dark_mode, mode);
         }
+    }
+
+    #[test]
+    fn highlight_mode_and_aux_hotkeys_defaults_and_roundtrip() {
+        let def = AppConfig::default();
+        assert!(!def.fix_highlighted_only);
+        assert!(def.toggle_power_hotkey.is_none());
+        assert!(def.toggle_highlight_hotkey.is_none());
+
+        let legacy_json =
+            r#"{"model_url":"https://huggingface.co/a/b/resolve/main/m.gguf"}"#;
+        let decoded_legacy: AppConfig = serde_json::from_str(legacy_json).unwrap();
+        assert!(!decoded_legacy.fix_highlighted_only);
+        assert!(decoded_legacy.toggle_power_hotkey.is_none());
+        assert!(decoded_legacy.toggle_highlight_hotkey.is_none());
+
+        let mut cfg = AppConfig::default();
+        cfg.fix_highlighted_only = true;
+        cfg.toggle_power_hotkey = Some(HotkeyBinding {
+            ctrl: true,
+            alt: true,
+            shift: false,
+            win: false,
+            vk: 0x50, // Ctrl + Alt + P
+        });
+        cfg.toggle_highlight_hotkey = Some(HotkeyBinding {
+            ctrl: true,
+            alt: false,
+            shift: true,
+            win: false,
+            vk: 0x48, // Ctrl + Shift + H
+        });
+
+        let encoded = serde_json::to_string(&cfg).unwrap();
+        let decoded: AppConfig = serde_json::from_str(&encoded).unwrap();
+        assert!(decoded.fix_highlighted_only);
+        assert_eq!(decoded.toggle_power_hotkey, cfg.toggle_power_hotkey);
+        assert_eq!(decoded.toggle_highlight_hotkey, cfg.toggle_highlight_hotkey);
     }
 }

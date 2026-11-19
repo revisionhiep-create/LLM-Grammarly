@@ -171,14 +171,14 @@ fn main() -> eframe::Result<()> {
     let startup_cfg = config::load_config();
     let initial_size = startup_cfg
         .window
-        .map(|w| [w.width.max(435.0), w.height.max(455.0)])
-        .unwrap_or([475.0, 485.0]);
+        .map(|w| [w.width.max(470.0), w.height.max(565.0)])
+        .unwrap_or([490.0, 590.0]);
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Keyboard LLM")
             .with_inner_size(initial_size)
-            .with_min_inner_size([435.0, 455.0])
+            .with_min_inner_size([470.0, 565.0])
             .with_icon(icon::app_viewport_icon(false)),
         ..Default::default()
     };

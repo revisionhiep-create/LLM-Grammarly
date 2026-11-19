@@ -150,6 +150,13 @@ impl AppPhase {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HotkeyTarget {
+    Fix,
+    TogglePower,
+    ToggleHighlight,
+}
+
 struct SharedState {
     phase: AppPhase,
     error: Option<String>,
@@ -159,6 +166,9 @@ struct SharedState {
     download_cancel: Option<Arc<AtomicBool>>,
     picked_folder: Option<PathBuf>,
     hotkey_revert: Option<HotkeyBinding>,
+    toggle_power_hotkey_revert: Option<Option<HotkeyBinding>>,
+    toggle_highlight_hotkey_revert: Option<Option<HotkeyBinding>>,
+    highlight_sync: Option<bool>,
 }
 
 impl Default for SharedState {
@@ -172,6 +182,9 @@ impl Default for SharedState {
             download_cancel: None,
             picked_folder: None,
             hotkey_revert: None,
+            toggle_power_hotkey_revert: None,
+            toggle_highlight_hotkey_revert: None,
+            highlight_sync: None,
         }
     }
 }
@@ -183,6 +196,8 @@ enum CtrlCmd {
     DownloadModel(String, PathBuf),
     CancelDownload,
     UpdateHotkey(HotkeyBinding),
+    UpdateTogglePowerHotkey(Option<HotkeyBinding>),
+    UpdateToggleHighlightHotkey(Option<HotkeyBinding>),
     ShowWindow,
     Quit,
     DownloadProgress {
@@ -333,6 +348,8 @@ pub struct KeyboardLlmApp {
     shared_url: Arc<Mutex<String>>,
     shared_dir: Arc<Mutex<PathBuf>>,
     shared_hotkey: Arc<Mutex<HotkeyBinding>>,
+    shared_highlighted_only: Arc<AtomicBool>,
+    shared_recording: Arc<AtomicBool>,
     state: Arc<Mutex<SharedState>>,
     ctrl_tx: Sender<CtrlCmd>,
     ctrl_join: Option<JoinHandle<()>>,
@@ -344,7 +361,7 @@ pub struct KeyboardLlmApp {
     icon_tex_on: egui::TextureHandle,
     last_viewport_active: bool,
     applied_dark_mode: bool,
-    recording_hotkey: bool,
+    recording_hotkey: Option<HotkeyTarget>,
     hotkey_hint: Option<String>,
     browsing_folder: Arc<AtomicBool>,
 }
@@ -363,6 +380,8 @@ impl KeyboardLlmApp {
         let shared_url = Arc::new(Mutex::new(url_input.clone()));
         let shared_dir = Arc::new(Mutex::new(effective_dir));
         let shared_hotkey = Arc::new(Mutex::new(config.hotkey));
+        let shared_highlighted_only = Arc::new(AtomicBool::new(config.fix_highlighted_only));
+        let shared_recording = Arc::new(AtomicBool::new(false));
         let state = Arc::new(Mutex::new(SharedState::default()));
 
         let tex_off = cc.egui_ctx.load_texture(
@@ -435,6 +454,8 @@ impl KeyboardLlmApp {
         let ctx_hk = cc.egui_ctx.clone();
         let hotkey = HotkeyController::spawn(
             Arc::clone(&llm),
+            Arc::clone(&shared_highlighted_only),
+            Arc::clone(&shared_recording),
             Arc::new(move |evt| {
                 let _ = tx_hk.send(CtrlCmd::Hotkey(evt));
                 ctx_hk.request_repaint();
@@ -446,6 +467,9 @@ impl KeyboardLlmApp {
         let url_ctrl = Arc::clone(&shared_url);
         let dir_ctrl = Arc::clone(&shared_dir);
         let hk_ctrl = Arc::clone(&shared_hotkey);
+        let hl_ctrl = Arc::clone(&shared_highlighted_only);
+        let init_power_hk = config.toggle_power_hotkey;
+        let init_hl_hk = config.toggle_highlight_hotkey;
         let tx_ctrl = ctrl_tx.clone();
         let shell_ctrl = shell.clone();
         let ctx_ctrl = cc.egui_ctx.clone();
@@ -460,6 +484,9 @@ impl KeyboardLlmApp {
                     url_ctrl,
                     dir_ctrl,
                     hk_ctrl,
+                    init_power_hk,
+                    init_hl_hk,
+                    hl_ctrl,
                     llm,
                     hotkey,
                     shell_ctrl,
@@ -475,6 +502,8 @@ impl KeyboardLlmApp {
             shared_url,
             shared_dir,
             shared_hotkey,
+            shared_highlighted_only,
+            shared_recording,
             state,
             ctrl_tx,
             ctrl_join: Some(ctrl_join),
@@ -486,7 +515,7 @@ impl KeyboardLlmApp {
             icon_tex_on: tex_on,
             last_viewport_active: false,
             applied_dark_mode: dark_mode,
-            recording_hotkey: false,
+            recording_hotkey: None,
             hotkey_hint: None,
             browsing_folder: Arc::new(AtomicBool::new(false)),
         }
@@ -510,8 +539,8 @@ impl KeyboardLlmApp {
             let prev = self.config.window.unwrap_or(WindowState {
                 x,
                 y,
-                width: size.x.max(435.0),
-                height: size.y.max(455.0),
+                width: size.x.max(470.0),
+                height: size.y.max(565.0),
                 maximized: true,
             });
             WindowState {
@@ -522,8 +551,8 @@ impl KeyboardLlmApp {
             WindowState {
                 x,
                 y,
-                width: size.x.max(435.0),
-                height: size.y.max(455.0),
+                width: size.x.max(470.0),
+                height: size.y.max(565.0),
                 maximized: false,
             }
         };
@@ -567,10 +596,46 @@ impl KeyboardLlmApp {
         }
     }
 
-    fn handle_hotkey_recording(&mut self, ctx: &egui::Context) {
-        if !self.recording_hotkey {
-            return;
+    fn toggle_recording(&mut self, target: HotkeyTarget) {
+        if self.recording_hotkey == Some(target) {
+            self.recording_hotkey = None;
+            self.hotkey_hint = None;
+        } else {
+            self.recording_hotkey = Some(target);
+            self.hotkey_hint = Some("Use Ctrl, Alt, or Shift + key, or F1–F12".to_string());
         }
+        self.shared_recording
+            .store(self.recording_hotkey.is_some(), Ordering::Relaxed);
+    }
+
+    fn find_hotkey_conflict(
+        &self,
+        target: HotkeyTarget,
+        candidate: HotkeyBinding,
+    ) -> Option<&'static str> {
+        let existing: [(HotkeyTarget, &'static str, Option<HotkeyBinding>); 3] = [
+            (HotkeyTarget::Fix, "Fix", Some(self.config.hotkey)),
+            (
+                HotkeyTarget::TogglePower,
+                "On / Off",
+                self.config.toggle_power_hotkey,
+            ),
+            (
+                HotkeyTarget::ToggleHighlight,
+                "Highlight mode",
+                self.config.toggle_highlight_hotkey,
+            ),
+        ];
+        existing
+            .into_iter()
+            .find(|(t, _, b)| *t != target && *b == Some(candidate))
+            .map(|(_, name, _)| name)
+    }
+
+    fn handle_hotkey_recording(&mut self, ctx: &egui::Context) {
+        let Some(target) = self.recording_hotkey else {
+            return;
+        };
         let events = ctx.input(|i| i.events.clone());
         for ev in events {
             if let egui::Event::Key {
@@ -582,7 +647,8 @@ impl KeyboardLlmApp {
             } = ev
             {
                 if key == egui::Key::Escape {
-                    self.recording_hotkey = false;
+                    self.recording_hotkey = None;
+                    self.shared_recording.store(false, Ordering::Relaxed);
                     self.hotkey_hint = None;
                     return;
                 }
@@ -594,18 +660,42 @@ impl KeyboardLlmApp {
                         win: false,
                         vk,
                     };
-                    if candidate.is_valid() {
-                        self.recording_hotkey = false;
-                        self.hotkey_hint = None;
-                        self.config.hotkey = candidate;
-                        *self.shared_hotkey.lock().unwrap() = candidate;
-                        self.save_current_config();
-                        let _ = self.ctrl_tx.send(CtrlCmd::UpdateHotkey(candidate));
-                        return;
-                    } else {
+                    if !candidate.is_valid() {
                         self.hotkey_hint =
                             Some("Add Ctrl, Alt, or Shift (or use F1–F12)".to_string());
+                        continue;
                     }
+                    if let Some(conflict_name) = self.find_hotkey_conflict(target, candidate) {
+                        self.hotkey_hint =
+                            Some(format!("Already used by {conflict_name} hotkey"));
+                        return;
+                    }
+                    self.recording_hotkey = None;
+                    self.shared_recording.store(false, Ordering::Relaxed);
+                    self.hotkey_hint = None;
+                    match target {
+                        HotkeyTarget::Fix => {
+                            self.config.hotkey = candidate;
+                            *self.shared_hotkey.lock().unwrap() = candidate;
+                            self.save_current_config();
+                            let _ = self.ctrl_tx.send(CtrlCmd::UpdateHotkey(candidate));
+                        }
+                        HotkeyTarget::TogglePower => {
+                            self.config.toggle_power_hotkey = Some(candidate);
+                            self.save_current_config();
+                            let _ = self
+                                .ctrl_tx
+                                .send(CtrlCmd::UpdateTogglePowerHotkey(Some(candidate)));
+                        }
+                        HotkeyTarget::ToggleHighlight => {
+                            self.config.toggle_highlight_hotkey = Some(candidate);
+                            self.save_current_config();
+                            let _ = self
+                                .ctrl_tx
+                                .send(CtrlCmd::UpdateToggleHighlightHotkey(Some(candidate)));
+                        }
+                    }
+                    return;
                 }
             }
         }
@@ -614,7 +704,12 @@ impl KeyboardLlmApp {
 
 impl Drop for KeyboardLlmApp {
     fn drop(&mut self) {
-        if self.config.window != self.last_saved_window {
+        let latest_hl = self.shared_highlighted_only.load(Ordering::Relaxed);
+        let hl_changed = self.config.fix_highlighted_only != latest_hl;
+        if hl_changed {
+            self.config.fix_highlighted_only = latest_hl;
+        }
+        if hl_changed || self.config.window != self.last_saved_window {
             self.save_current_config();
             self.last_saved_window = self.config.window;
         }
@@ -640,7 +735,12 @@ impl eframe::App for KeyboardLlmApp {
                     shell.hide_window();
                 }
             } else {
-                if self.config.window != self.last_saved_window {
+                let latest_hl = self.shared_highlighted_only.load(Ordering::Relaxed);
+                let hl_changed = self.config.fix_highlighted_only != latest_hl;
+                if hl_changed {
+                    self.config.fix_highlighted_only = latest_hl;
+                }
+                if hl_changed || self.config.window != self.last_saved_window {
                     self.save_current_config();
                     self.last_saved_window = self.config.window;
                 }
@@ -650,7 +750,17 @@ impl eframe::App for KeyboardLlmApp {
 
         self.handle_hotkey_recording(ctx);
 
-        let (phase, error, notice, active_model_path, picked_folder, hotkey_revert) = {
+        let (
+            phase,
+            error,
+            notice,
+            active_model_path,
+            picked_folder,
+            hotkey_revert,
+            toggle_power_hotkey_revert,
+            toggle_highlight_hotkey_revert,
+            highlight_sync,
+        ) = {
             let mut s = self.state.lock().unwrap();
             (
                 s.phase.clone(),
@@ -659,15 +769,36 @@ impl eframe::App for KeyboardLlmApp {
                 s.active_model_path.clone(),
                 s.picked_folder.take(),
                 s.hotkey_revert.take(),
+                s.toggle_power_hotkey_revert.take(),
+                s.toggle_highlight_hotkey_revert.take(),
+                s.highlight_sync.take(),
             )
         };
 
         if let Some(folder) = picked_folder {
             self.apply_storage_dir(folder);
         }
+        let mut config_dirty = false;
         if let Some(prev_hk) = hotkey_revert {
             self.config.hotkey = prev_hk;
             *self.shared_hotkey.lock().unwrap() = prev_hk;
+            config_dirty = true;
+        }
+        if let Some(prev_power_hk) = toggle_power_hotkey_revert {
+            self.config.toggle_power_hotkey = prev_power_hk;
+            config_dirty = true;
+        }
+        if let Some(prev_hl_hk) = toggle_highlight_hotkey_revert {
+            self.config.toggle_highlight_hotkey = prev_hl_hk;
+            config_dirty = true;
+        }
+        if let Some(hl) = highlight_sync {
+            if self.config.fix_highlighted_only != hl {
+                self.config.fix_highlighted_only = hl;
+                config_dirty = true;
+            }
+        }
+        if config_dirty {
             self.save_current_config();
         }
 
@@ -987,91 +1118,116 @@ impl eframe::App for KeyboardLlmApp {
                         }
                     }
 
-                    // Hotkey + customize row
-                    ui.horizontal(|ui| {
-                        egui::Frame::new()
-                            .fill(theme.bg_keycap)
-                            .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
-                            .corner_radius(egui::CornerRadius::same(5))
-                            .inner_margin(egui::Margin::symmetric(8, 2))
-                            .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(self.config.hotkey.display_label())
-                                        .size(11.5)
-                                        .strong()
-                                        .color(theme.text_primary),
-                                );
-                            });
-                        ui.label(
-                            egui::RichText::new("Select all & fix")
-                                .size(12.0)
-                                .color(theme.text_muted),
-                        );
+                    // Highlighted-only mode switch row
+                    let is_fixing = matches!(phase, AppPhase::Fixing { .. });
+                    let hl_resp = toggle_switch_row(
+                        ui,
+                        &theme,
+                        egui::Id::new("fix_highlighted_only_switch"),
+                        "Fix highlighted text only",
+                        self.config.fix_highlighted_only,
+                        !is_fixing,
+                    )
+                    .on_hover_text(
+                        "When on, skips Ctrl+A and only corrects text you have highlighted",
+                    );
+                    if hl_resp.clicked() {
+                        self.config.fix_highlighted_only = !self.config.fix_highlighted_only;
+                        self.shared_highlighted_only
+                            .store(self.config.fix_highlighted_only, Ordering::Relaxed);
+                        self.save_current_config();
+                    }
 
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let is_busy_hotkey = matches!(
-                                phase,
-                                AppPhase::Loading | AppPhase::Fixing { .. } | AppPhase::Unloading
-                            );
-                            if self.config.hotkey != HotkeyBinding::default()
-                                && !self.recording_hotkey
+                    // Hotkey rows (Fix, On / Off toggle, Highlight mode toggle)
+                    let is_busy_hotkey = matches!(
+                        phase,
+                        AppPhase::Loading | AppPhase::Fixing { .. } | AppPhase::Unloading
+                    );
+                    let fix_desc = if self.config.fix_highlighted_only {
+                        "Fix highlighted text"
+                    } else {
+                        "Select all & fix"
+                    };
+                    match render_hotkey_row(
+                        ui,
+                        &theme,
+                        Some(self.config.hotkey.display_label()),
+                        fix_desc,
+                        self.recording_hotkey == Some(HotkeyTarget::Fix),
+                        is_busy_hotkey,
+                        (self.config.hotkey != HotkeyBinding::default()).then_some("Reset"),
+                        "Change Hotkey",
+                    ) {
+                        HotkeyRowAction::ToggleRecord => self.toggle_recording(HotkeyTarget::Fix),
+                        HotkeyRowAction::Secondary => {
+                            let def = HotkeyBinding::default();
+                            if let Some(conflict_name) =
+                                self.find_hotkey_conflict(HotkeyTarget::Fix, def)
                             {
-                                if ui
-                                    .add_enabled(
-                                        !is_busy_hotkey,
-                                        egui::Button::new(
-                                            egui::RichText::new("Reset")
-                                                .size(11.0)
-                                                .color(theme.text_muted),
-                                        )
-                                        .fill(egui::Color32::TRANSPARENT)
-                                        .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
-                                        .corner_radius(egui::CornerRadius::same(5))
-                                        .min_size(egui::vec2(48.0, 22.0)),
-                                    )
-                                    .clicked()
-                                {
-                                    let def = HotkeyBinding::default();
-                                    self.config.hotkey = def;
-                                    *self.shared_hotkey.lock().unwrap() = def;
-                                    self.save_current_config();
-                                    let _ = self.ctrl_tx.send(CtrlCmd::UpdateHotkey(def));
-                                }
-                            }
-
-                            let change_label = if self.recording_hotkey {
-                                "Press keys... (Esc)"
+                                self.state.lock().unwrap().error = Some(format!(
+                                    "Cannot reset: {} is currently used by {conflict_name} hotkey",
+                                    def.display_label()
+                                ));
                             } else {
-                                "Change Hotkey"
-                            };
-                            if ui
-                                .add_enabled(
-                                    !is_busy_hotkey,
-                                    egui::Button::new(
-                                        egui::RichText::new(change_label)
-                                            .size(11.0)
-                                            .color(theme.text_primary),
-                                    )
-                                    .fill(if self.recording_hotkey {
-                                        theme.bg_keycap
-                                    } else {
-                                        theme.btn_sec_bg
-                                    })
-                                    .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
-                                    .corner_radius(egui::CornerRadius::same(5))
-                                    .min_size(egui::vec2(96.0, 22.0)),
-                                )
-                                .clicked()
-                            {
-                                self.recording_hotkey = !self.recording_hotkey;
-                                self.hotkey_hint = if self.recording_hotkey {
-                                    Some("Use Ctrl, Alt, or Shift + key, or F1–F12".to_string())
-                                } else {
-                                    None
-                                };
+                                self.config.hotkey = def;
+                                *self.shared_hotkey.lock().unwrap() = def;
+                                self.save_current_config();
+                                let _ = self.ctrl_tx.send(CtrlCmd::UpdateHotkey(def));
                             }
-                        });
-                    });
+                        }
+                        HotkeyRowAction::None => {}
+                    }
+
+                    let is_busy_power = matches!(
+                        phase,
+                        AppPhase::Loading
+                            | AppPhase::Fixing { .. }
+                            | AppPhase::Unloading
+                            | AppPhase::Downloading { .. }
+                    );
+                    match render_hotkey_row(
+                        ui,
+                        &theme,
+                        self.config.toggle_power_hotkey.map(|b| b.display_label()),
+                        "On / Off",
+                        self.recording_hotkey == Some(HotkeyTarget::TogglePower),
+                        is_busy_power,
+                        self.config.toggle_power_hotkey.map(|_| "Clear"),
+                        "Set Hotkey",
+                    ) {
+                        HotkeyRowAction::ToggleRecord => {
+                            self.toggle_recording(HotkeyTarget::TogglePower)
+                        }
+                        HotkeyRowAction::Secondary => {
+                            self.config.toggle_power_hotkey = None;
+                            self.save_current_config();
+                            let _ = self.ctrl_tx.send(CtrlCmd::UpdateTogglePowerHotkey(None));
+                        }
+                        HotkeyRowAction::None => {}
+                    }
+
+                    match render_hotkey_row(
+                        ui,
+                        &theme,
+                        self.config.toggle_highlight_hotkey.map(|b| b.display_label()),
+                        "Highlight mode",
+                        self.recording_hotkey == Some(HotkeyTarget::ToggleHighlight),
+                        false,
+                        self.config.toggle_highlight_hotkey.map(|_| "Clear"),
+                        "Set Hotkey",
+                    ) {
+                        HotkeyRowAction::ToggleRecord => {
+                            self.toggle_recording(HotkeyTarget::ToggleHighlight)
+                        }
+                        HotkeyRowAction::Secondary => {
+                            self.config.toggle_highlight_hotkey = None;
+                            self.save_current_config();
+                            let _ = self
+                                .ctrl_tx
+                                .send(CtrlCmd::UpdateToggleHighlightHotkey(None));
+                        }
+                        HotkeyRowAction::None => {}
+                    }
 
                     if let Some(hint) = &self.hotkey_hint {
                         ui.label(egui::RichText::new(hint).size(11.0).color(theme.dot_busy));
@@ -1600,16 +1756,121 @@ fn draw_pill_switch(
     );
 }
 
-fn power_switch_row(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HotkeyRowAction {
+    None,
+    ToggleRecord,
+    Secondary,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_hotkey_row(
     ui: &mut egui::Ui,
     theme: &ThemeColors,
+    badge_label: Option<String>,
+    description: &str,
+    is_recording: bool,
+    is_busy: bool,
+    secondary_label: Option<&str>,
+    empty_action_label: &str,
+) -> HotkeyRowAction {
+    let mut action = HotkeyRowAction::None;
+    ui.horizontal(|ui| {
+        let has_binding = badge_label.is_some();
+        let (fill, text_color, strong, text) = match badge_label {
+            Some(lbl) => (theme.bg_keycap, theme.text_primary, true, lbl),
+            None => (
+                theme.bg_callout,
+                theme.text_muted,
+                false,
+                "No hotkey set".to_string(),
+            ),
+        };
+        egui::Frame::new()
+            .fill(fill)
+            .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
+            .corner_radius(egui::CornerRadius::same(5))
+            .inner_margin(egui::Margin::symmetric(8, 2))
+            .show(ui, |ui| {
+                let mut rt = egui::RichText::new(text).size(11.5).color(text_color);
+                if strong {
+                    rt = rt.strong();
+                }
+                ui.label(rt);
+            });
+        ui.label(
+            egui::RichText::new(description)
+                .size(12.0)
+                .color(theme.text_muted),
+        );
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if let Some(sec_lbl) = secondary_label.filter(|_| !is_recording) {
+                if ui
+                    .add_enabled(
+                        !is_busy,
+                        egui::Button::new(
+                            egui::RichText::new(sec_lbl)
+                                .size(11.0)
+                                .color(theme.text_muted),
+                        )
+                        .fill(egui::Color32::TRANSPARENT)
+                        .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
+                        .corner_radius(egui::CornerRadius::same(5))
+                        .min_size(egui::vec2(48.0, 22.0)),
+                    )
+                    .clicked()
+                {
+                    action = HotkeyRowAction::Secondary;
+                }
+            }
+
+            let action_label = if is_recording {
+                "Press keys... (Esc)"
+            } else if has_binding {
+                "Change Hotkey"
+            } else {
+                empty_action_label
+            };
+            if ui
+                .add_enabled(
+                    !is_busy,
+                    egui::Button::new(
+                        egui::RichText::new(action_label)
+                            .size(11.0)
+                            .color(theme.text_primary),
+                    )
+                    .fill(if is_recording {
+                        theme.bg_keycap
+                    } else {
+                        theme.btn_sec_bg
+                    })
+                    .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
+                    .corner_radius(egui::CornerRadius::same(5))
+                    .min_size(egui::vec2(96.0, 22.0)),
+                )
+                .clicked()
+            {
+                action = HotkeyRowAction::ToggleRecord;
+            }
+        });
+    });
+    action
+}
+
+#[allow(clippy::too_many_arguments)]
+fn switch_row_widget(
+    ui: &mut egui::Ui,
+    theme: &ThemeColors,
+    pill_id: egui::Id,
+    height: f32,
+    font_size: f32,
     label: &str,
     is_on: bool,
     enabled: bool,
     show_spinner: bool,
 ) -> egui::Response {
     let width = ui.available_width();
-    let height = 46.0;
     let sense = if enabled {
         egui::Sense::click()
     } else {
@@ -1661,7 +1922,7 @@ fn power_switch_row(
     let avail_text_w = (switch_rect.left() - 10.0 - text_left).max(40.0);
     let galley = egui::WidgetText::from(
         egui::RichText::new(label)
-            .size(14.0)
+            .size(font_size)
             .strong()
             .color(text_color),
     )
@@ -1678,13 +1939,45 @@ fn power_switch_row(
         ui,
         theme,
         switch_rect,
-        response.id,
+        pill_id,
         is_on,
         enabled,
         response.hovered(),
     );
 
     response
+}
+
+fn power_switch_row(
+    ui: &mut egui::Ui,
+    theme: &ThemeColors,
+    label: &str,
+    is_on: bool,
+    enabled: bool,
+    show_spinner: bool,
+) -> egui::Response {
+    switch_row_widget(
+        ui,
+        theme,
+        egui::Id::new("power_toggle_switch"),
+        46.0,
+        14.0,
+        label,
+        is_on,
+        enabled,
+        show_spinner,
+    )
+}
+
+fn toggle_switch_row(
+    ui: &mut egui::Ui,
+    theme: &ThemeColors,
+    pill_id: egui::Id,
+    label: &str,
+    is_on: bool,
+    enabled: bool,
+) -> egui::Response {
+    switch_row_widget(ui, theme, pill_id, 42.0, 13.0, label, is_on, enabled, false)
 }
 
 fn secondary_button(
@@ -1746,12 +2039,33 @@ fn controller_loop(
     shared_url: Arc<Mutex<String>>,
     shared_dir: Arc<Mutex<PathBuf>>,
     shared_hotkey: Arc<Mutex<HotkeyBinding>>,
+    initial_power_hotkey: Option<HotkeyBinding>,
+    initial_highlight_hotkey: Option<HotkeyBinding>,
+    shared_highlighted_only: Arc<AtomicBool>,
     mut llm: Arc<LlmHandle>,
     mut hotkey: HotkeyController,
     shell: Option<ShellBridge>,
     ctx: egui::Context,
 ) {
     let mut registered_hotkey = *shared_hotkey.lock().unwrap();
+    let mut registered_power_hotkey = initial_power_hotkey;
+    if let Some(hk) = initial_power_hotkey {
+        if let Err(e) = hotkey.set_toggle_power(Some(hk)) {
+            registered_power_hotkey = None;
+            let mut s = state.lock().unwrap();
+            s.toggle_power_hotkey_revert = Some(None);
+            s.error = Some(e.to_string());
+        }
+    }
+    let mut registered_highlight_hotkey = initial_highlight_hotkey;
+    if let Some(hk) = initial_highlight_hotkey {
+        if let Err(e) = hotkey.set_toggle_highlight(Some(hk)) {
+            registered_highlight_hotkey = None;
+            let mut s = state.lock().unwrap();
+            s.toggle_highlight_hotkey_revert = Some(None);
+            s.error = Some(e.to_string());
+        }
+    }
 
     let sync_shell = |is_on: bool, is_busy: bool, progress: Option<TaskbarProgress>| {
         if let Some(sh) = shell.as_ref() {
@@ -1975,6 +2289,38 @@ fn controller_loop(
                     sync_shell(false, false, None);
                 }
             }
+            CtrlCmd::UpdateTogglePowerHotkey(next_binding) => {
+                match hotkey.set_toggle_power(next_binding) {
+                    Ok(()) => {
+                        registered_power_hotkey = next_binding;
+                        state.lock().unwrap().error = None;
+                        ctx.request_repaint();
+                    }
+                    Err(e) => {
+                        let _ = hotkey.set_toggle_power(registered_power_hotkey);
+                        let mut s = state.lock().unwrap();
+                        s.toggle_power_hotkey_revert = Some(registered_power_hotkey);
+                        s.error = Some(e.to_string());
+                        ctx.request_repaint();
+                    }
+                }
+            }
+            CtrlCmd::UpdateToggleHighlightHotkey(next_binding) => {
+                match hotkey.set_toggle_highlight(next_binding) {
+                    Ok(()) => {
+                        registered_highlight_hotkey = next_binding;
+                        state.lock().unwrap().error = None;
+                        ctx.request_repaint();
+                    }
+                    Err(e) => {
+                        let _ = hotkey.set_toggle_highlight(registered_highlight_hotkey);
+                        let mut s = state.lock().unwrap();
+                        s.toggle_highlight_hotkey_revert = Some(registered_highlight_hotkey);
+                        s.error = Some(e.to_string());
+                        ctx.request_repaint();
+                    }
+                }
+            }
             CtrlCmd::DownloadProgress { progress } => {
                 {
                     let mut s = state.lock().unwrap();
@@ -2196,6 +2542,30 @@ fn controller_loop(
                         s.error = Some(err);
                     }
                     sync_shell(true, false, Some(TaskbarProgress::None));
+                }
+                HotkeyEvent::TogglePowerRequested => {
+                    let _ = tx.send(CtrlCmd::ToggleOnOff);
+                }
+                HotkeyEvent::ToggleHighlightRequested => {
+                    let next = !shared_highlighted_only.load(Ordering::Relaxed);
+                    shared_highlighted_only.store(next, Ordering::Relaxed);
+                    {
+                        let mut s = state.lock().unwrap();
+                        s.highlight_sync = Some(next);
+                        let mode_msg = if next {
+                            "Highlight-only mode on"
+                        } else {
+                            "Highlight-only mode off"
+                        };
+                        s.notice = match &s.phase {
+                            AppPhase::On { backend_desc } | AppPhase::Fixing { backend_desc } => {
+                                format!("{backend_desc} · {mode_msg}")
+                            }
+                            AppPhase::Off => format!("{mode_msg} · VRAM free"),
+                            _ => mode_msg.to_string(),
+                        };
+                    }
+                    ctx.request_repaint();
                 }
             },
             CtrlCmd::ShowWindow => {
