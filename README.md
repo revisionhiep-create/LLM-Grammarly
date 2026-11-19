@@ -6,6 +6,31 @@ Press a system-wide hotkey in any Windows text field to fix typos, spelling, gra
 
 ---
 
+## Download & Launch on Windows (File Explorer)
+
+No installation, Python, or external dependencies required — just download and run:
+
+- **Latest Release Page**: [GitHub Releases](https://github.com/revisionhiep-create/LLM-Grammarly/releases/latest)
+- **Direct Download**: [`LLM-Grammarly.exe`](https://github.com/revisionhiep-create/LLM-Grammarly/releases/latest/download/LLM-Grammarly.exe) (Windows 10/11 64-bit; Vulkan GPU recommended, automatic CPU fallback built in)
+
+### Launching via File Explorer
+
+1. **Download `LLM-Grammarly.exe`** from the link above.
+2. **Open File Explorer** (press **`Win + E`** or click the folder icon on your taskbar) and go to your **Downloads** folder.
+3. **Move `LLM-Grammarly.exe` to its own folder (recommended)** — for example, create `C:\Users\<YourName>\LLM-Grammarly` and drag `LLM-Grammarly.exe` into it.
+   > **Why?** By default, the app downloads its ~2.52 GB `.gguf` AI model into the same folder as `LLM-Grammarly.exe`, so keeping it in a dedicated folder keeps your Downloads folder tidy.
+4. **Double-click `LLM-Grammarly.exe`** to open the app.
+   - **If Windows Defender SmartScreen appears** (*"Windows protected your PC"* because the open-source binary is unsigned): click **More info** → **Run anyway**.
+   - Alternatively, right-click `LLM-Grammarly.exe` → **Properties** → check **Unblock** → click **OK**, then double-click to launch.
+5. **Download the AI model on first launch**:
+   - Click **Download & Turn On** in the app window (or click **Browse...** first if you want to store models in a different folder).
+   - Once the download finishes and loads, the top toggle switch slides right and turns **green** (**Ready**).
+6. **Start fixing text anywhere**:
+   - Click into any text box (browser, Discord/Slack, Notepad, email, IDE, etc.) and press **`Ctrl + Q`** (default hotkey) to fix spelling, grammar, and punctuation in place.
+   - *(Optional)* Right-click `LLM-Grammarly.exe` in File Explorer and choose **Pin to Start**, **Show more options → Pin to taskbar**, or **Create shortcut** for quick access later.
+
+---
+
 ## Features
 
 - **Single Self-Contained Windows Executable**: Compiles into one portable `.exe` (`LLM-Grammarly.exe`) with `llama.cpp` compiled directly in, linking only standard Windows OS / MSVC runtime libraries and `vulkan-1.dll`.
@@ -31,20 +56,19 @@ Press a system-wide hotkey in any Windows text field to fix typos, spelling, gra
 
 ---
 
-## Usage
+## Everyday Usage & Customization
 
-1. **First Launch**:
-   - Place `LLM-Grammarly.exe` in your preferred folder and launch it.
-   - If no `.gguf` file is found yet in the active model storage folder (the `.exe` folder by default), click **Download & Turn On** (or **Download Model**) to stream the default uncensored Qwen3.5-4B `Q4_K_M` model from Hugging Face.
-   - You can pause/cancel mid-download (keeping the `.gguf.part` file to resume later) or discard the partial file at any time.
-2. **Turn On / Turn Off**:
-   - Click anywhere in the top **Turn On / Turn Off** toggle box (or use the system tray menu / taskbar thumbnail button) to load or unload the model from VRAM and enable/disable the hotkey.
-3. **Fix Text Anywhere**:
-   - Place your cursor in any text input (browser, chat app, notepad, IDE, etc.) and press your hotkey (default **`Ctrl + Q`**) to correct spelling, grammar, and punctuation in place.
+1. **Turn On / Turn Off**:
+   - Click anywhere inside the top **Turn On / Turn Off** toggle box (or use the system tray icon menu / Windows taskbar hover buttons) to load or unload the model from GPU VRAM and enable or disable the global hotkey.
+2. **Fix Text Anywhere**:
+   - Place your cursor in any text input and press your hotkey (default **`Ctrl + Q`**) to select and fix the text in place.
+3. **Pause, Resume, or Switch Models**:
+   - You can click **Pause / Cancel Download** mid-download (keeping the `.gguf.part` file to resume later via **Resume Download** / **Resume Download & Turn On**) or click **Discard partial file**.
 4. **Customize Hotkey, Model, or Storage Folder**:
    - **Hotkey**: Click **Change Hotkey**, press your desired shortcut (or `F1`–`F12`), or click **Reset** to restore `Ctrl + Q`.
-   - **Model URL**: Paste any Hugging Face `.gguf` URL (`/blob/` or `/resolve/`), then click **Download Model** / **Reset Default**.
+   - **Model URL**: Paste any Hugging Face `.gguf` URL (`/blob/` or `/resolve/`), then click **Download Model** (or **Reset Default** to return to the default model).
    - **Model Folder**: Click **Browse...** to choose another storage folder or **Reset** to use the `.exe` folder again.
+   - **Tray Behavior**: Enable **Minimize to tray on close** or click **Hide to Tray** to keep the app running quietly in the background.
    - **Settings File**: Saved automatically at `%APPDATA%\keyboard-llm\config\settings.json`.
 
 ---
@@ -89,7 +113,7 @@ LLM-Grammarly/
     └── icon_render.rs    # Pure-Rust anti-aliased procedural icon renderer shared with build.rs
 ```
 
-> **Note**: Large binaries (`*.gguf`, `*.exe`) are intentionally excluded via `.gitignore`. Prebuilt `.exe` binaries can be distributed through GitHub Releases.
+> **Note**: Large binaries (`*.gguf`, `*.exe`) are intentionally excluded from git history via `.gitignore`. Prebuilt `.exe` binaries are published on [GitHub Releases](https://github.com/revisionhiep-create/LLM-Grammarly/releases/latest).
 
 ---
 
