@@ -46,18 +46,18 @@ No installation, Python, or external dependencies required — just download and
 - **Customizable System-Wide Hotkeys**:
   - **Fix Text**: Defaults to **`Ctrl + Q`**; rebind live via **Change Hotkey** / **Reset** to any modifier combo (`Ctrl` / `Alt` / `Shift` + key) or standalone function key (`F1`–`F12`).
   - **Optional Mode & Power Toggle Hotkeys**: Assign global hotkeys for **On / Off** and **Highlight mode** (`No hotkey set` by default; assignable via **Set Hotkey** / **Change Hotkey**, removable via **Clear**, and saved in `settings.json`).
-  - Waits for physical key/modifier release before copying (`Ctrl+A` → `Ctrl+C`, or `Ctrl+C` only in highlight mode), runs local LLM correction, pastes the result with `Ctrl+V` only if changed, polls `GetClipboardSequenceNumber` adaptively, and restores your previous clipboard text afterward.
+  - Waits for physical key/modifier release before copying (`Ctrl+A` → `Ctrl+C`, or `Ctrl+C` only in highlight mode), runs local LLM correction, pastes the result with `Ctrl+V` only if changed (or copies it to your clipboard with a notification if you switched windows during inference), polls `GetClipboardSequenceNumber` adaptively, and restores your previous clipboard text afterward.
 - **Full-Box Clickable On / Off & Highlighted-Only Switches**:
   - Clean neutral UI featuring animated white (Off) / green (On) toggle pills where clicking anywhere inside the switch row toggles the setting.
-  - **Turn On / Turn Off**: Turning **Off** unregisters the fix hotkey and unloads the model + KV cache to free GPU VRAM immediately. Turning **On** loads the model, warms up Vulkan GPU shaders, and activates the fix hotkey (optional **On / Off** and **Highlight mode** hotkeys stay active even while Off).
+  - **Turn On / Turn Off**: Turning **Off** unregisters the fix hotkey and unloads the model + KV cache to free GPU VRAM / system RAM immediately. Turning **On** loads the model, warms up Vulkan GPU shaders (or CPU inference), and activates the fix hotkey (optional **On / Off** and **Highlight mode** hotkeys stay active even while Off).
   - **Fix highlighted text only**: Located directly beneath Turn On / Turn Off (defaults to **Off** and saved in `settings.json`). When **On**, skips `Ctrl+A` so only your currently highlighted selection is corrected and replaced.
 - **Dark & Light Mode Switch**:
   - Top-right sun (left / Light Mode) and moon (right / Dark Mode) pill switch next to the status badge. Defaults to **Dark Mode** on first launch, syncs the native Windows title bar, and saves your preference in `settings.json`.
 - **Interactive Hugging Face GGUF Downloader**:
   - First-run and model-switching download panel showing progress percentage, transferred bytes, download speed (MB/s), and ETA.
   - Supports **Pause / Cancel Download** and **Resume** via `.gguf.part` partial files and HTTP `Range` requests, validates the `GGUF` magic header (`b"GGUF"`), automatically converts Hugging Face `/blob/` links to `/resolve/` URLs, and mirrors progress onto the Windows Taskbar button.
-- **Configurable Model URL & Storage Folder**:
-  - Edit the Hugging Face GGUF download link directly or pick one of the preset buttons (**GPU** for 4B uncensored ~2.52 GB, **CPU Strong** for 2B uncensored ~1.21 GB, or **CPU Weak** for LFM2.5-1.2B ~697 MB), and choose any **Model Storage Folder** via a native Windows folder picker (**Browse...** / **Reset**). Defaults to the folder containing the running `.exe`.
+- **Configurable Model URL, Compute Mode & Storage Folder**:
+  - Edit the Hugging Face GGUF download link directly or pick one of the preset buttons (**GPU** for 4B uncensored ~2.52 GB, **CPU Strong** for 2B uncensored ~1.21 GB, or **CPU Weak** for LFM2.5-1.2B ~697 MB), switch **Compute** between **Auto** (Vulkan GPU with automatic CPU fallback) and **CPU Only**, and choose any **Model Storage Folder** via a native Windows folder picker (**Browse...** / **Reset**). Defaults to the folder containing the running `.exe`.
 - **Native Windows Desktop Integration**:
   - Procedurally rendered neutral keyboard icon embedded into PE executable resources (`assets/icon.ico`), window chrome, system tray, and taskbar.
   - **Windows Taskbar Hover Toolbar** (`ITaskbarList3`) with **Turn On / Turn Off** and **Quit** thumbnail buttons.
@@ -65,25 +65,25 @@ No installation, Python, or external dependencies required — just download and
   - **Silent Windows Notifications**: Displays a silent native Windows notification whenever **On / Off** or **Highlight mode** is toggled (via hotkey, tray, taskbar, or UI), controlled by a **Notifications** checkbox in the footer (enabled by default and saved in `settings.json`).
   - **Single-Instance Guard** that brings the existing window to focus if launched a second time.
 - **Multi-Monitor & Per-Monitor DPI Aware**:
-  - Persists window size, virtual-screen coordinates, monitor placement, and maximized state in `%APPDATA%\keyboard-llm\config\settings.json`, clamps safely onto visible monitors if a display is disconnected, and scales cleanly across displays with different resolutions/DPI settings.
+  - Persists window size, virtual-screen coordinates, monitor placement, and maximized state in `%APPDATA%\LLM Grammarly\config\settings.json`, clamps safely onto visible monitors if a display is disconnected, and scales cleanly across displays with different resolutions/DPI settings.
 
 ---
 
 ## Everyday Usage & Customization
 
 1. **Turn On / Turn Off**:
-   - Click anywhere inside the top **Turn On / Turn Off** toggle box (or use the system tray icon menu / Windows taskbar hover buttons) to load or unload the model from GPU VRAM and enable or disable the global hotkey.
+   - Click anywhere inside the top **Turn On / Turn Off** toggle box (or use the system tray icon menu / Windows taskbar hover buttons) to load or unload the model from GPU VRAM / system RAM and enable or disable the global hotkey.
 2. **Fix Text Anywhere**:
    - Place your cursor in any text input and press your fix hotkey (default **`Ctrl + Q`**) to select and fix all text in place, or turn on **Fix highlighted text only** to skip `Ctrl+A` and correct only highlighted text.
 3. **Pause, Resume, or Switch Models**:
    - You can click **Pause / Cancel Download** mid-download (keeping the `.gguf.part` file to resume later via **Resume Download** / **Resume Download & Turn On**) or click **Discard partial file**.
 4. **Customize Hotkeys, Model, or Storage Folder**:
    - **Hotkeys**: Click **Change Hotkey** on the fix row (or **Reset** to restore `Ctrl + Q`), and optionally click **Set Hotkey** / **Clear** on the **On / Off** and **Highlight mode** rows (`No hotkey set` by default).
-   - **Model URL**: Paste any Hugging Face `.gguf` URL (`/blob/` or `/resolve/`), or click **GPU** (4B uncensored, ~2.52 GB), **CPU Strong** (2B uncensored, ~1.21 GB), or **CPU Weak** (LFM2.5-1.2B, ~697 MB) to switch presets, then click **Download Model**.
+   - **Model URL & Compute**: Paste any Hugging Face `.gguf` URL (`/blob/` or `/resolve/`), or click **GPU** (4B uncensored, ~2.52 GB), **CPU Strong** (2B uncensored, ~1.21 GB), or **CPU Weak** (LFM2.5-1.2B, ~697 MB) to switch presets, then click **Download Model** / **Switch Model**. Use **Compute** (**Auto** / **CPU Only**) to force CPU inference or reload the active model.
    - **Model Folder**: Click **Browse...** to choose another storage folder or **Reset** to use the `.exe` folder again.
    - **Tray Behavior**: Enable **Minimize to tray on close** or click **Hide to Tray** to keep the app running quietly in the background.
    - **Notifications**: Toggle the **Notifications** checkbox in the footer to enable or disable silent Windows notifications on **On / Off** and **Highlight mode** changes (enabled by default).
-   - **Settings File**: Saved automatically at `%APPDATA%\keyboard-llm\config\settings.json`.
+   - **Settings File**: Saved automatically at `%APPDATA%\LLM Grammarly\config\settings.json`.
 
 ---
 
@@ -97,16 +97,20 @@ No installation, Python, or external dependencies required — just download and
 
 ## CLI Self-Test
 
-You can verify model caching/downloading, Vulkan GPU offloading, shader warmup, inference latency, uncensored output, multiline preservation, and clean VRAM unloading from a terminal:
+You can verify model caching/downloading, Vulkan GPU / CPU execution, warmup, inference latency, uncensored output, multiline preservation, and clean memory unloading from a terminal:
 
 ```powershell
 .\LLM-Grammarly.exe --self-test
 ```
 
-To test against a custom model directory:
+Options:
+- `--model-dir "D:\Models"` — test against a custom model directory
+- `--preset <gpu|cpu-strong|cpu-weak>` — select one of the built-in model presets
+- `--model-url "<URL>"` — test a custom Hugging Face `.gguf` URL
+- `--cpu` — force CPU-only inference instead of Auto (Vulkan GPU + CPU fallback)
 
 ```powershell
-.\LLM-Grammarly.exe --self-test --model-dir "D:\Models"
+.\LLM-Grammarly.exe --self-test --model-dir "D:\Models" --preset cpu-strong --cpu
 ```
 
 ---
@@ -125,11 +129,13 @@ LLM-Grammarly/
 │   └── icon.ico          # Multi-resolution neutral keyboard icon (16..256 px)
 └── src/
     ├── main.rs           # Single-instance mutex, --self-test runner, eframe entrypoint
-    ├── app.rs            # egui desktop UI, toggle switch, downloader UI, settings & state loop
-    ├── config.rs         # settings.json persistence, HF URL normalization, hotkey/window config
+    ├── app.rs            # egui desktop window layout, cached model status, debounced settings
+    ├── controller.rs     # AppPhase state machine and background worker coordination
+    ├── widgets.rs        # Theme palette, custom toggle pills, progress bar, formatting helpers
+    ├── config.rs         # settings.json persistence, HF URL normalization, hotkey/window/compute config
     ├── downloader.rs     # Streaming GGUF downloader with HTTP Range resume & magic validation
     ├── hotkey.rs         # Win32 RegisterHotKey loop, SendInput copy/paste, clipboard restore
-    ├── llm.rs            # Embedded llama-cpp-2 worker (Vulkan GPU/CPU fallback, warmup, VRAM unload)
+    ├── llm.rs            # Embedded llama-cpp-2 worker (Vulkan GPU/CPU fallback, warmup, memory unload)
     ├── taskbar.rs        # Win32 ITaskbarList3 progress/thumbbar, native tray icon & notifications, folder picker, monitor clamping
     ├── icon.rs           # Converts rendered RGBA icon buffers to egui/tray/Win32 HICON formats
     └── icon_render.rs    # Pure-Rust anti-aliased procedural icon renderer shared with build.rs

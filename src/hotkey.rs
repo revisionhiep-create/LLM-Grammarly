@@ -2,7 +2,7 @@ use anyhow::{anyhow, bail, Result};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND, LPARAM, WPARAM};
@@ -21,7 +21,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetMessageW, PeekMessageW, PostThreadMessageW, MSG, PM_NOREMOVE, WM_APP, WM_HOTKEY,
+    GetForegroundWindow, GetMessageW, PeekMessageW, PostThreadMessageW, MSG, PM_NOREMOVE, WM_APP,
+    WM_HOTKEY,
 };
 
 use crate::config::HotkeyBinding;
@@ -31,28 +32,41 @@ const HOTKEY_FIX_ID: i32 = 1;
 const HOTKEY_TOGGLE_POWER_ID: i32 = 2;
 const HOTKEY_TOGGLE_HIGHLIGHT_ID: i32 = 3;
 
-const WM_APP_ENABLE: u32 = WM_APP + 1;
-const WM_APP_DISABLE: u32 = WM_APP + 2;
-const WM_APP_QUIT: u32 = WM_APP + 3;
-const WM_APP_SET_TOGGLE_POWER: u32 = WM_APP + 4;
-const WM_APP_SET_TOGGLE_HIGHLIGHT: u32 = WM_APP + 5;
+const WM_APP_CMD: u32 = WM_APP + 1;
 
 #[derive(Debug, Clone)]
 pub enum HotkeyEvent {
     FixingStarted,
     FixSucceeded { elapsed_ms: u128, changed: bool },
+    FixCopiedToClipboard { elapsed_ms: u128 },
     FixNotice(String),
     FixError(String),
     TogglePowerRequested,
     ToggleHighlightRequested,
 }
 
+enum HotkeyCmd {
+    Enable {
+        binding: HotkeyBinding,
+        reply: Sender<Result<()>>,
+    },
+    Disable {
+        reply: Sender<()>,
+    },
+    SetTogglePower {
+        binding: Option<HotkeyBinding>,
+        reply: Sender<Result<()>>,
+    },
+    SetToggleHighlight {
+        binding: Option<HotkeyBinding>,
+        reply: Sender<Result<()>>,
+    },
+    Quit,
+}
+
 pub struct HotkeyController {
     thread_id: u32,
-    pending_reply: Arc<Mutex<Option<Sender<Result<()>>>>>,
-    active_binding: Arc<Mutex<HotkeyBinding>>,
-    toggle_power_binding: Arc<Mutex<Option<HotkeyBinding>>>,
-    toggle_highlight_binding: Arc<Mutex<Option<HotkeyBinding>>>,
+    cmd_tx: Sender<HotkeyCmd>,
     join: Option<JoinHandle<()>>,
 }
 
@@ -64,25 +78,14 @@ impl HotkeyController {
         notify: Arc<dyn Fn(HotkeyEvent) + Send + Sync>,
     ) -> Result<Self> {
         let (tid_tx, tid_rx) = mpsc::channel();
-        let pending_reply: Arc<Mutex<Option<Sender<Result<()>>>>> = Arc::new(Mutex::new(None));
-        let active_binding = Arc::new(Mutex::new(HotkeyBinding::default()));
-        let toggle_power_binding = Arc::new(Mutex::new(None));
-        let toggle_highlight_binding = Arc::new(Mutex::new(None));
-
-        let pending_clone = Arc::clone(&pending_reply);
-        let binding_clone = Arc::clone(&active_binding);
-        let power_clone = Arc::clone(&toggle_power_binding);
-        let highlight_clone = Arc::clone(&toggle_highlight_binding);
+        let (cmd_tx, cmd_rx) = mpsc::channel();
 
         let join = thread::Builder::new()
             .name("hotkey-loop".to_string())
             .spawn(move || {
                 hotkey_thread(
                     tid_tx,
-                    pending_clone,
-                    binding_clone,
-                    power_clone,
-                    highlight_clone,
+                    cmd_rx,
                     fix_highlighted_only,
                     recording_hotkey,
                     llm,
@@ -97,94 +100,74 @@ impl HotkeyController {
 
         Ok(Self {
             thread_id,
-            pending_reply,
-            active_binding,
-            toggle_power_binding,
-            toggle_highlight_binding,
+            cmd_tx,
             join: Some(join),
         })
+    }
+
+    fn post_wake(&self) -> Result<()> {
+        unsafe {
+            PostThreadMessageW(self.thread_id, WM_APP_CMD, WPARAM(0), LPARAM(0))
+                .map_err(|e| anyhow!("Failed to signal hotkey thread: {e}"))
+        }
     }
 
     pub fn enable(&self, binding: HotkeyBinding) -> Result<()> {
         if !binding.is_valid() {
             bail!("Invalid hotkey binding: {}", binding.display_label());
         }
-        *self.active_binding.lock().unwrap() = binding;
-
         let (tx, rx) = mpsc::channel();
-        {
-            let mut slot = self.pending_reply.lock().unwrap();
-            *slot = Some(tx);
-        }
-        unsafe {
-            PostThreadMessageW(self.thread_id, WM_APP_ENABLE, WPARAM(0), LPARAM(0))
-                .map_err(|e| anyhow!("Failed to signal hotkey enable: {e}"))?;
-        }
+        self.cmd_tx
+            .send(HotkeyCmd::Enable { binding, reply: tx })
+            .map_err(|_| anyhow!("Hotkey thread stopped"))?;
+        self.post_wake()?;
         rx.recv_timeout(Duration::from_secs(3))
             .map_err(|_| anyhow!("Timed out enabling {} hotkey", binding.display_label()))?
     }
 
-    fn update_optional_hotkey(
-        &self,
-        slot: &Arc<Mutex<Option<HotkeyBinding>>>,
-        msg_id: u32,
-        label: &str,
-        binding: Option<HotkeyBinding>,
-    ) -> Result<()> {
+    pub fn set_toggle_power(&self, binding: Option<HotkeyBinding>) -> Result<()> {
         if let Some(b) = binding {
             if !b.is_valid() {
-                bail!("Invalid {label} hotkey binding: {}", b.display_label());
+                bail!("Invalid On / Off hotkey binding: {}", b.display_label());
             }
         }
-        *slot.lock().unwrap() = binding;
-
         let (tx, rx) = mpsc::channel();
-        {
-            let mut pending = self.pending_reply.lock().unwrap();
-            *pending = Some(tx);
-        }
-        unsafe {
-            PostThreadMessageW(self.thread_id, msg_id, WPARAM(0), LPARAM(0))
-                .map_err(|e| anyhow!("Failed to signal {label} hotkey update: {e}"))?;
-        }
+        self.cmd_tx
+            .send(HotkeyCmd::SetTogglePower { binding, reply: tx })
+            .map_err(|_| anyhow!("Hotkey thread stopped"))?;
+        self.post_wake()?;
         rx.recv_timeout(Duration::from_secs(3))
-            .map_err(|_| anyhow!("Timed out updating {label} hotkey"))?
-    }
-
-    pub fn set_toggle_power(&self, binding: Option<HotkeyBinding>) -> Result<()> {
-        self.update_optional_hotkey(
-            &self.toggle_power_binding,
-            WM_APP_SET_TOGGLE_POWER,
-            "On / Off",
-            binding,
-        )
+            .map_err(|_| anyhow!("Timed out updating On / Off hotkey"))?
     }
 
     pub fn set_toggle_highlight(&self, binding: Option<HotkeyBinding>) -> Result<()> {
-        self.update_optional_hotkey(
-            &self.toggle_highlight_binding,
-            WM_APP_SET_TOGGLE_HIGHLIGHT,
-            "Highlight mode",
-            binding,
-        )
+        if let Some(b) = binding {
+            if !b.is_valid() {
+                bail!(
+                    "Invalid Highlight mode hotkey binding: {}",
+                    b.display_label()
+                );
+            }
+        }
+        let (tx, rx) = mpsc::channel();
+        self.cmd_tx
+            .send(HotkeyCmd::SetToggleHighlight { binding, reply: tx })
+            .map_err(|_| anyhow!("Hotkey thread stopped"))?;
+        self.post_wake()?;
+        rx.recv_timeout(Duration::from_secs(3))
+            .map_err(|_| anyhow!("Timed out updating Highlight mode hotkey"))?
     }
 
     pub fn disable(&self) {
         let (tx, rx) = mpsc::channel();
-        {
-            let mut slot = self.pending_reply.lock().unwrap();
-            *slot = Some(tx);
-        }
-        unsafe {
-            if PostThreadMessageW(self.thread_id, WM_APP_DISABLE, WPARAM(0), LPARAM(0)).is_ok() {
-                let _ = rx.recv_timeout(Duration::from_secs(2));
-            }
+        if self.cmd_tx.send(HotkeyCmd::Disable { reply: tx }).is_ok() && self.post_wake().is_ok() {
+            let _ = rx.recv_timeout(Duration::from_secs(2));
         }
     }
 
     pub fn shutdown(&mut self) {
-        unsafe {
-            let _ = PostThreadMessageW(self.thread_id, WM_APP_QUIT, WPARAM(0), LPARAM(0));
+        if self.cmd_tx.send(HotkeyCmd::Quit).is_ok() {
+            let _ = self.post_wake();
         }
         if let Some(join) = self.join.take() {
             let _ = join.join();
@@ -198,9 +181,11 @@ impl Drop for HotkeyController {
     }
 }
 
-fn reply_pending(pending_reply: &Arc<Mutex<Option<Sender<Result<()>>>>>, res: Result<()>) {
-    if let Some(tx) = pending_reply.lock().unwrap().take() {
-        let _ = tx.send(res);
+struct InProgressGuard(Arc<AtomicBool>);
+
+impl Drop for InProgressGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
@@ -234,13 +219,52 @@ unsafe fn update_aux_hotkey(id: i32, name: &str, binding: Option<HotkeyBinding>)
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+unsafe fn drain_hotkey_commands(
+    cmd_rx: &mpsc::Receiver<HotkeyCmd>,
+    active_binding: &mut HotkeyBinding,
+) -> bool {
+    while let Ok(cmd) = cmd_rx.try_recv() {
+        match cmd {
+            HotkeyCmd::Enable { binding, reply } => {
+                let _ = UnregisterHotKey(None, HOTKEY_FIX_ID);
+                let res = RegisterHotKey(None, HOTKEY_FIX_ID, build_modifiers(binding), binding.vk)
+                    .map(|()| {
+                        *active_binding = binding;
+                    })
+                    .map_err(|_| {
+                        anyhow!(
+                            "{} is already registered by another application",
+                            binding.display_label()
+                        )
+                    });
+                let _ = reply.send(res);
+            }
+            HotkeyCmd::Disable { reply } => {
+                let _ = UnregisterHotKey(None, HOTKEY_FIX_ID);
+                let _ = reply.send(());
+            }
+            HotkeyCmd::SetTogglePower { binding, reply } => {
+                let res = update_aux_hotkey(HOTKEY_TOGGLE_POWER_ID, "On / Off", binding);
+                let _ = reply.send(res);
+            }
+            HotkeyCmd::SetToggleHighlight { binding, reply } => {
+                let res = update_aux_hotkey(HOTKEY_TOGGLE_HIGHLIGHT_ID, "Highlight mode", binding);
+                let _ = reply.send(res);
+            }
+            HotkeyCmd::Quit => {
+                let _ = UnregisterHotKey(None, HOTKEY_FIX_ID);
+                let _ = UnregisterHotKey(None, HOTKEY_TOGGLE_POWER_ID);
+                let _ = UnregisterHotKey(None, HOTKEY_TOGGLE_HIGHLIGHT_ID);
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn hotkey_thread(
     tid_tx: Sender<u32>,
-    pending_reply: Arc<Mutex<Option<Sender<Result<()>>>>>,
-    active_binding: Arc<Mutex<HotkeyBinding>>,
-    toggle_power_binding: Arc<Mutex<Option<HotkeyBinding>>>,
-    toggle_highlight_binding: Arc<Mutex<Option<HotkeyBinding>>>,
+    cmd_rx: mpsc::Receiver<HotkeyCmd>,
     fix_highlighted_only: Arc<AtomicBool>,
     recording_hotkey: Arc<AtomicBool>,
     llm: Arc<LlmHandle>,
@@ -253,46 +277,26 @@ fn hotkey_thread(
         let tid = GetCurrentThreadId();
         let _ = tid_tx.send(tid);
 
+        let mut active_binding = HotkeyBinding::default();
+        if drain_hotkey_commands(&cmd_rx, &mut active_binding) {
+            return;
+        }
+
         let in_progress = Arc::new(AtomicBool::new(false));
         let mut last_fix_trigger: Option<Instant> = None;
         let mut last_power_trigger: Option<Instant> = None;
         let mut last_highlight_trigger: Option<Instant> = None;
 
-        while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
+        loop {
+            let ret = GetMessageW(&mut msg, HWND::default(), 0, 0);
+            if ret.0 <= 0 {
+                break;
+            }
             match msg.message {
-                WM_APP_ENABLE => {
-                    let binding = *active_binding.lock().unwrap();
-                    let mods = build_modifiers(binding);
-                    let _ = UnregisterHotKey(None, HOTKEY_FIX_ID);
-                    let res =
-                        RegisterHotKey(None, HOTKEY_FIX_ID, mods, binding.vk).map_err(|_| {
-                            anyhow!(
-                                "{} is already registered by another application",
-                                binding.display_label()
-                            )
-                        });
-                    reply_pending(&pending_reply, res);
-                }
-                WM_APP_DISABLE => {
-                    let _ = UnregisterHotKey(None, HOTKEY_FIX_ID);
-                    reply_pending(&pending_reply, Ok(()));
-                }
-                WM_APP_SET_TOGGLE_POWER => {
-                    let binding = *toggle_power_binding.lock().unwrap();
-                    let res = update_aux_hotkey(HOTKEY_TOGGLE_POWER_ID, "On / Off", binding);
-                    reply_pending(&pending_reply, res);
-                }
-                WM_APP_SET_TOGGLE_HIGHLIGHT => {
-                    let binding = *toggle_highlight_binding.lock().unwrap();
-                    let res =
-                        update_aux_hotkey(HOTKEY_TOGGLE_HIGHLIGHT_ID, "Highlight mode", binding);
-                    reply_pending(&pending_reply, res);
-                }
-                WM_APP_QUIT => {
-                    let _ = UnregisterHotKey(None, HOTKEY_FIX_ID);
-                    let _ = UnregisterHotKey(None, HOTKEY_TOGGLE_POWER_ID);
-                    let _ = UnregisterHotKey(None, HOTKEY_TOGGLE_HIGHLIGHT_ID);
-                    break;
+                WM_APP_CMD => {
+                    if drain_hotkey_commands(&cmd_rx, &mut active_binding) {
+                        break;
+                    }
                 }
                 WM_HOTKEY => {
                     if recording_hotkey.load(Ordering::Relaxed) {
@@ -315,22 +319,28 @@ fn hotkey_thread(
                             }
                             last_fix_trigger = Some(now);
 
-                            let binding = *active_binding.lock().unwrap();
+                            let guard = InProgressGuard(Arc::clone(&in_progress));
+                            let binding = active_binding;
                             let highlighted_only = fix_highlighted_only.load(Ordering::Relaxed);
                             let llm_clone = Arc::clone(&llm);
-                            let flag_clone = Arc::clone(&in_progress);
                             let notify_clone = Arc::clone(&notify);
-                            let _ = thread::Builder::new()
+                            if thread::Builder::new()
                                 .name("hotkey-fix".to_string())
                                 .spawn(move || {
+                                    let _guard = guard;
                                     run_fix_pipeline(
                                         binding,
                                         highlighted_only,
                                         llm_clone,
                                         notify_clone,
                                     );
-                                    flag_clone.store(false, Ordering::SeqCst);
-                                });
+                                })
+                                .is_err()
+                            {
+                                notify(HotkeyEvent::FixError(
+                                    "Failed to start text-fix worker thread".to_string(),
+                                ));
+                            }
                         }
                         HOTKEY_TOGGLE_POWER_ID => {
                             if let Some(prev) = last_power_trigger {
@@ -364,21 +374,17 @@ fn is_key_down(vk: i32) -> bool {
 }
 
 fn wait_for_hotkey_release(binding: HotkeyBinding) {
-    for _ in 0..56 {
-        let ctrl_down = binding.ctrl
-            && (is_key_down(VK_CONTROL.0 as i32)
-                || is_key_down(VK_LCONTROL.0 as i32)
-                || is_key_down(VK_RCONTROL.0 as i32));
-        let alt_down = binding.alt
-            && (is_key_down(VK_MENU.0 as i32)
-                || is_key_down(VK_LMENU.0 as i32)
-                || is_key_down(VK_RMENU.0 as i32));
-        let shift_down = binding.shift
-            && (is_key_down(VK_SHIFT.0 as i32)
-                || is_key_down(VK_LSHIFT.0 as i32)
-                || is_key_down(VK_RSHIFT.0 as i32));
-        let win_down = binding.win
-            && (is_key_down(VK_LWIN.0 as i32) || is_key_down(VK_RWIN.0 as i32));
+    for _ in 0..88 {
+        let ctrl_down = is_key_down(VK_CONTROL.0 as i32)
+            || is_key_down(VK_LCONTROL.0 as i32)
+            || is_key_down(VK_RCONTROL.0 as i32);
+        let alt_down = is_key_down(VK_MENU.0 as i32)
+            || is_key_down(VK_LMENU.0 as i32)
+            || is_key_down(VK_RMENU.0 as i32);
+        let shift_down = is_key_down(VK_SHIFT.0 as i32)
+            || is_key_down(VK_LSHIFT.0 as i32)
+            || is_key_down(VK_RSHIFT.0 as i32);
+        let win_down = is_key_down(VK_LWIN.0 as i32) || is_key_down(VK_RWIN.0 as i32);
         let key_down = is_key_down(binding.vk as i32);
 
         if !ctrl_down && !alt_down && !shift_down && !win_down && !key_down {
@@ -532,6 +538,7 @@ fn run_fix_pipeline(
 ) {
     wait_for_hotkey_release(binding);
 
+    let fg_before = unsafe { GetForegroundWindow() };
     let prev_clipboard = read_clipboard_text();
     let seq_before = unsafe { GetClipboardSequenceNumber() };
 
@@ -586,8 +593,11 @@ fn run_fix_pipeline(
 
     match llm.fix_text(captured.clone()) {
         Ok((fixed, elapsed_ms)) => {
+            let fg_after = unsafe { GetForegroundWindow() };
+            let same_window = fg_before.0.is_null() || fg_before == fg_after;
+
             if fixed == captured || fixed.trim().is_empty() {
-                if !fix_highlighted_only {
+                if !fix_highlighted_only && same_window {
                     tap_key(VK_RIGHT);
                 }
                 if let Some(prev) = prev_clipboard {
@@ -602,6 +612,11 @@ fn run_fix_pipeline(
 
             if let Err(err) = write_clipboard_text(&fixed) {
                 notify(HotkeyEvent::FixError(err.to_string()));
+                return;
+            }
+
+            if !same_window {
+                notify(HotkeyEvent::FixCopiedToClipboard { elapsed_ms });
                 return;
             }
 

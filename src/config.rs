@@ -1,11 +1,20 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_MODEL_URL: &str = "https://huggingface.co/HauhauCS/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive/resolve/main/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf";
 pub const CPU_STRONG_MODEL_URL: &str = "https://huggingface.co/HauhauCS/Qwen3.5-2B-Uncensored-HauhauCS-Aggressive/resolve/main/Qwen3.5-2B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf";
 pub const CPU_WEAK_MODEL_URL: &str = "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-Q4_K_M.gguf";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputeMode {
+    #[default]
+    Auto,
+    Cpu,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ModelPreset {
@@ -43,6 +52,15 @@ pub const MODEL_PRESETS: [ModelPreset; 3] = [
 pub fn preset_for_url(normalized_url: Option<&str>) -> Option<&'static ModelPreset> {
     let url = normalized_url?;
     MODEL_PRESETS.iter().find(|p| p.url == url)
+}
+
+pub fn preset_by_key(key: &str) -> Option<&'static ModelPreset> {
+    match key.trim().to_ascii_lowercase().as_str() {
+        "gpu" => Some(&MODEL_PRESETS[0]),
+        "cpu-strong" | "cpu_strong" => Some(&MODEL_PRESETS[1]),
+        "cpu-weak" | "cpu_weak" => Some(&MODEL_PRESETS[2]),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +160,7 @@ pub struct WindowState {
 pub struct AppConfig {
     pub model_url: String,
     pub model_dir: Option<String>,
+    pub compute_mode: ComputeMode,
     pub hotkey: HotkeyBinding,
     pub fix_highlighted_only: bool,
     pub toggle_power_hotkey: Option<HotkeyBinding>,
@@ -157,6 +176,7 @@ impl Default for AppConfig {
         Self {
             model_url: DEFAULT_MODEL_URL.to_string(),
             model_dir: None,
+            compute_mode: ComputeMode::Auto,
             hotkey: HotkeyBinding::default(),
             fix_highlighted_only: false,
             toggle_power_hotkey: None,
@@ -170,10 +190,26 @@ impl Default for AppConfig {
 }
 
 pub fn config_file_path() -> PathBuf {
+    if let Some(dirs) = directories::ProjectDirs::from("", "", "LLM Grammarly") {
+        dirs.config_dir().join("settings.json")
+    } else if let Ok(appdata) = std::env::var("APPDATA") {
+        PathBuf::from(appdata)
+            .join("LLM Grammarly")
+            .join("config")
+            .join("settings.json")
+    } else {
+        PathBuf::from("settings.json")
+    }
+}
+
+fn legacy_config_file_path() -> PathBuf {
     if let Some(dirs) = directories::ProjectDirs::from("", "", "keyboard-llm") {
         dirs.config_dir().join("settings.json")
     } else if let Ok(appdata) = std::env::var("APPDATA") {
-        PathBuf::from(appdata).join("keyboard-llm").join("settings.json")
+        PathBuf::from(appdata)
+            .join("keyboard-llm")
+            .join("config")
+            .join("settings.json")
     } else {
         PathBuf::from("settings.json")
     }
@@ -199,8 +235,15 @@ pub fn effective_model_dir(cfg: &AppConfig) -> PathBuf {
 
 pub fn load_config() -> AppConfig {
     let path = config_file_path();
-    let Ok(raw) = fs::read_to_string(&path) else {
-        return AppConfig::default();
+    let raw = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => {
+            let legacy = legacy_config_file_path();
+            let Ok(s) = fs::read_to_string(&legacy) else {
+                return AppConfig::default();
+            };
+            s
+        }
     };
     let mut cfg: AppConfig = serde_json::from_str(&raw).unwrap_or_default();
     if cfg.model_url.trim().is_empty() {
@@ -222,16 +265,43 @@ pub fn load_config() -> AppConfig {
     cfg
 }
 
-pub fn save_config(cfg: &AppConfig) -> Result<()> {
-    let path = config_file_path();
+pub fn save_config_to_path(path: &Path, cfg: &AppConfig) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create config dir {}", parent.display()))?;
     }
     let json = serde_json::to_string_pretty(cfg)?;
-    fs::write(&path, json)
-        .with_context(|| format!("Failed to write settings to {}", path.display()))?;
+    let mut tmp_os = path.as_os_str().to_os_string();
+    tmp_os.push(".tmp");
+    let tmp_path = PathBuf::from(tmp_os);
+
+    {
+        let mut tmp_file = File::create(&tmp_path)
+            .with_context(|| format!("Failed to create temp settings {}", tmp_path.display()))?;
+        tmp_file
+            .write_all(json.as_bytes())
+            .and_then(|()| tmp_file.sync_all())
+            .with_context(|| format!("Failed to write temp settings {}", tmp_path.display()))?;
+    }
+
+    if fs::rename(&tmp_path, path).is_err() {
+        let _ = fs::remove_file(&tmp_path);
+        fs::write(path, json.as_bytes())
+            .with_context(|| format!("Failed to write settings to {}", path.display()))?;
+    }
     Ok(())
+}
+
+pub fn save_config(cfg: &AppConfig) -> Result<()> {
+    let path = config_file_path();
+    save_config_to_path(&path, cfg)
+}
+
+/// Returns the `.part` staging path alongside `dest` without replacing the `.gguf` extension.
+pub fn partial_download_path(dest: &Path) -> PathBuf {
+    let mut os = dest.as_os_str().to_os_string();
+    os.push(".part");
+    PathBuf::from(os)
 }
 
 /// Validates and normalizes a model download URL.
@@ -481,5 +551,78 @@ mod tests {
             None
         );
         assert_eq!(preset_for_url(None), None);
+        assert_eq!(preset_by_key("gpu"), Some(&MODEL_PRESETS[0]));
+        assert_eq!(preset_by_key("CPU-STRONG"), Some(&MODEL_PRESETS[1]));
+        assert_eq!(preset_by_key("cpu_weak"), Some(&MODEL_PRESETS[2]));
+        assert_eq!(preset_by_key("unknown"), None);
+    }
+
+    #[test]
+    fn compute_mode_defaults_auto_and_roundtrips() {
+        let def = AppConfig::default();
+        assert_eq!(def.compute_mode, ComputeMode::Auto);
+
+        let legacy_json =
+            r#"{"model_url":"https://huggingface.co/a/b/resolve/main/m.gguf"}"#;
+        let decoded_legacy: AppConfig = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(decoded_legacy.compute_mode, ComputeMode::Auto);
+
+        for mode in [ComputeMode::Auto, ComputeMode::Cpu] {
+            let mut cfg = AppConfig::default();
+            cfg.compute_mode = mode;
+            let encoded = serde_json::to_string(&cfg).unwrap();
+            let decoded: AppConfig = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded.compute_mode, mode);
+        }
+    }
+
+    #[test]
+    fn partial_download_path_appends_part_without_replacing_extension() {
+        let dest = Path::new("C:\\Models\\model.v1.gguf");
+        assert_eq!(
+            partial_download_path(dest),
+            PathBuf::from("C:\\Models\\model.v1.gguf.part")
+        );
+        let no_ext = Path::new("C:\\Models\\weights");
+        assert_eq!(
+            partial_download_path(no_ext),
+            PathBuf::from("C:\\Models\\weights.part")
+        );
+    }
+
+    #[test]
+    fn atomic_save_config_writes_cleanly_without_leaving_tmp() {
+        let dir = std::env::temp_dir().join(format!("kbllm_cfg_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let path = dir.join("settings.json");
+
+        let mut cfg = AppConfig::default();
+        cfg.compute_mode = ComputeMode::Cpu;
+        save_config_to_path(&path, &cfg).unwrap();
+
+        let raw = fs::read_to_string(&path).unwrap();
+        let decoded: AppConfig = serde_json::from_str(&raw).unwrap();
+        assert_eq!(decoded.compute_mode, ComputeMode::Cpu);
+        assert!(!dir.join("settings.json.tmp").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_path_uses_llm_grammarly_folder() {
+        let path = config_file_path();
+        assert_eq!(
+            path.file_name().and_then(|s| s.to_str()),
+            Some("settings.json")
+        );
+        let suffix = Path::new("LLM Grammarly")
+            .join("config")
+            .join("settings.json");
+        assert!(
+            path.ends_with(&suffix),
+            "Expected config path to end with {:?}, got: {}",
+            suffix,
+            path.display()
+        );
     }
 }

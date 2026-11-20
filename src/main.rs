@@ -2,14 +2,16 @@
 
 mod app;
 mod config;
+mod controller;
 mod downloader;
 mod hotkey;
 mod icon;
 mod icon_render;
 mod llm;
 mod taskbar;
+mod widgets;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use eframe::egui;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -20,7 +22,7 @@ use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS
 use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
+    FindWindowW, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
 };
 
 struct InstanceMutex(HANDLE);
@@ -42,7 +44,9 @@ fn acquire_single_instance() -> Option<InstanceMutex> {
             if let Ok(hwnd) = FindWindowW(None, w!("LLM Grammarly")) {
                 if !hwnd.0.is_null() {
                     let _ = ShowWindow(hwnd, SW_SHOW);
-                    let _ = ShowWindow(hwnd, SW_RESTORE);
+                    if IsIconic(hwnd).as_bool() {
+                        let _ = ShowWindow(hwnd, SW_RESTORE);
+                    }
                     let _ = SetForegroundWindow(hwnd);
                 }
             }
@@ -52,19 +56,58 @@ fn acquire_single_instance() -> Option<InstanceMutex> {
     }
 }
 
-fn parse_self_test_model_dir() -> PathBuf {
+struct SelfTestOpts {
+    model_dir: PathBuf,
+    model_url: String,
+    compute_mode: config::ComputeMode,
+}
+
+fn parse_self_test_opts() -> Result<SelfTestOpts> {
+    let mut model_dir: Option<PathBuf> = None;
+    let mut model_url = config::DEFAULT_MODEL_URL.to_string();
+    let mut compute_mode = config::ComputeMode::Auto;
+
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
-        if arg == "--model-dir" {
-            if let Some(dir) = args.next() {
+        match arg.as_str() {
+            "--self-test" => {}
+            "--cpu" => compute_mode = config::ComputeMode::Cpu,
+            "--model-dir" => {
+                let dir = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--model-dir requires a directory path"))?;
                 let trimmed = dir.trim();
                 if !trimmed.is_empty() {
-                    return PathBuf::from(trimmed);
+                    model_dir = Some(PathBuf::from(trimmed));
                 }
             }
+            "--preset" => {
+                let key = args.next().ok_or_else(|| {
+                    anyhow!("--preset requires one of: gpu, cpu-strong, cpu-weak")
+                })?;
+                let preset = config::preset_by_key(&key).ok_or_else(|| {
+                    anyhow!("Unknown preset '{key}' (expected gpu, cpu-strong, or cpu-weak)")
+                })?;
+                model_url = preset.url.to_string();
+            }
+            "--model-url" => {
+                let raw = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--model-url requires a GGUF URL"))?;
+                model_url = config::normalize_model_url(&raw)?;
+            }
+            _ => {}
         }
     }
-    config::effective_model_dir(&config::load_config())
+
+    let model_dir =
+        model_dir.unwrap_or_else(|| config::effective_model_dir(&config::load_config()));
+    let model_url = config::normalize_model_url(&model_url)?;
+    Ok(SelfTestOpts {
+        model_dir,
+        model_url,
+        compute_mode,
+    })
 }
 
 fn run_self_test() -> Result<()> {
@@ -72,21 +115,30 @@ fn run_self_test() -> Result<()> {
         let _ = AttachConsole(ATTACH_PARENT_PROCESS);
     }
 
-    let url = config::normalize_model_url(config::DEFAULT_MODEL_URL)?;
-    let model_dir = parse_self_test_model_dir();
-    let model_path = config::local_model_path(&model_dir, &url);
+    let opts = parse_self_test_opts()?;
+    let model_path = config::local_model_path(&opts.model_dir, &opts.model_url);
 
     println!("=== LLM Grammarly Self-Test ===");
-    println!("Model URL : {url}");
-    println!("Storage   : {}", model_dir.display());
+    println!("Model URL : {}", opts.model_url);
+    println!("Storage   : {}", opts.model_dir.display());
     println!("Model file: {}", model_path.display());
+    println!(
+        "Compute   : {}",
+        match opts.compute_mode {
+            config::ComputeMode::Auto => "Auto (Vulkan GPU if available, CPU fallback)",
+            config::ComputeMode::Cpu => "CPU Only",
+        }
+    );
 
     if !model_path.exists() {
-        println!("Downloading default uncensored Qwen3.5-4B Q4_K_M model...");
+        println!(
+            "Downloading {}...",
+            config::display_model_name(&opts.model_url)
+        );
         let dl_start = Instant::now();
         let cancel = Arc::new(AtomicBool::new(false));
         let mut last_pct = 0u64;
-        downloader::download_model(&url, &model_path, cancel, |p| {
+        downloader::download_model(&opts.model_url, &model_path, cancel, |p| {
             if let Some(tot) = p.total {
                 let pct = (p.downloaded * 100) / tot.max(1);
                 if pct >= last_pct + 10 || pct == 100 {
@@ -107,7 +159,7 @@ fn run_self_test() -> Result<()> {
 
     let mut llm = llm::LlmHandle::spawn();
     let load_start = Instant::now();
-    let info = llm.load(model_path)?;
+    let info = llm.load(model_path, opts.compute_mode)?;
     println!(
         "Loaded {} on {} in {:.2}s (includes warmup)",
         info.model_name,
@@ -148,7 +200,7 @@ fn run_self_test() -> Result<()> {
         }
     }
 
-    println!("\nUnloading model to verify VRAM release...");
+    println!("\nUnloading model to verify memory release...");
     llm.unload();
     llm.shutdown();
     println!("Self-test PASSED.");
@@ -171,14 +223,14 @@ fn main() -> eframe::Result<()> {
     let startup_cfg = config::load_config();
     let initial_size = startup_cfg
         .window
-        .map(|w| [w.width.max(470.0), w.height.max(565.0)])
-        .unwrap_or([490.0, 590.0]);
+        .map(|w| [w.width.max(470.0), w.height.max(595.0)])
+        .unwrap_or([495.0, 625.0]);
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("LLM Grammarly")
             .with_inner_size(initial_size)
-            .with_min_inner_size([470.0, 565.0])
+            .with_min_inner_size([470.0, 595.0])
             .with_icon(icon::app_viewport_icon(false)),
         ..Default::default()
     };

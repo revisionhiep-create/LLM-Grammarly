@@ -3,153 +3,30 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::config::{
     default_model_dir, display_model_name, effective_model_dir, load_config, local_model_path,
-    normalize_model_url, preset_for_url, save_config, AppConfig, HotkeyBinding, WindowState,
-    MODEL_PRESETS,
+    normalize_model_url, partial_download_path, preset_for_url, save_config, AppConfig,
+    ComputeMode, HotkeyBinding, WindowState, MODEL_PRESETS,
 };
-use crate::downloader::{download_model, DownloadProgress};
-use crate::hotkey::{HotkeyController, HotkeyEvent};
+use crate::controller::{controller_loop, notify_highlight_mode, AppPhase, CtrlCmd, SharedState};
+use crate::hotkey::HotkeyController;
 use crate::icon;
 use crate::icon_render;
-use crate::llm::{LlmHandle, LoadInfo};
+use crate::llm::LlmHandle;
 use crate::taskbar::{
     get_window_placement_state, pick_folder_dialog, restore_window_position,
-    set_window_dark_titlebar, ShellBridge, ShellCommand, TaskbarProgress,
+    set_window_dark_titlebar, ShellBridge, ShellCommand,
 };
-
-#[derive(Clone, Copy)]
-struct ThemeColors {
-    bg_window: egui::Color32,
-    bg_card: egui::Color32,
-    bg_input: egui::Color32,
-    bg_callout: egui::Color32,
-    bg_callout_hover: egui::Color32,
-    bg_callout_active: egui::Color32,
-    bg_keycap: egui::Color32,
-    bg_track: egui::Color32,
-    border_subtle: egui::Color32,
-    border_med: egui::Color32,
-    text_primary: egui::Color32,
-    text_muted: egui::Color32,
-    accent_fill: egui::Color32,
-    btn_sec_bg: egui::Color32,
-    btn_sec_hover: egui::Color32,
-    dot_ready: egui::Color32,
-    dot_busy: egui::Color32,
-    dot_off: egui::Color32,
-    error_bg: egui::Color32,
-    error_border: egui::Color32,
-    error_text: egui::Color32,
-    selection_bg: egui::Color32,
-    power_border_off: egui::Color32,
-}
-
-impl ThemeColors {
-    const fn light() -> Self {
-        Self {
-            bg_window: egui::Color32::from_rgb(244, 243, 241),         // #F4F3F1
-            bg_card: egui::Color32::from_rgb(255, 255, 255),           // #FFFFFF
-            bg_input: egui::Color32::from_rgb(250, 250, 249),          // #FAFAF9
-            bg_callout: egui::Color32::from_rgb(248, 247, 245),        // #F8F7F5
-            bg_callout_hover: egui::Color32::from_rgb(240, 238, 234),  // #F0EEEA
-            bg_callout_active: egui::Color32::from_rgb(232, 229, 223), // #E8E5DF
-            bg_keycap: egui::Color32::from_rgb(242, 240, 236),         // #F2F0EC
-            bg_track: egui::Color32::from_rgb(231, 229, 226),          // #E7E5E2
-            border_subtle: egui::Color32::from_rgb(229, 226, 220),     // #E5E2DC
-            border_med: egui::Color32::from_rgb(214, 211, 205),        // #D6D3CD
-            text_primary: egui::Color32::from_rgb(31, 29, 27),         // #1F1D1B
-            text_muted: egui::Color32::from_rgb(115, 110, 104),        // #736E68
-            accent_fill: egui::Color32::from_rgb(41, 38, 36),          // #292624
-            btn_sec_bg: egui::Color32::from_rgb(236, 234, 230),        // #ECEAE6
-            btn_sec_hover: egui::Color32::from_rgb(226, 223, 217),     // #E2DFD9
-            dot_ready: egui::Color32::from_rgb(78, 128, 96),           // #4E8060
-            dot_busy: egui::Color32::from_rgb(181, 137, 61),           // #B5893D
-            dot_off: egui::Color32::from_rgb(160, 154, 146),           // #A09A92
-            error_bg: egui::Color32::from_rgb(250, 241, 240),
-            error_border: egui::Color32::from_rgb(224, 192, 188),
-            error_text: egui::Color32::from_rgb(156, 60, 52),
-            selection_bg: egui::Color32::from_rgb(214, 211, 205),
-            power_border_off: egui::Color32::from_rgb(200, 196, 190), // #C8C4BE
-        }
-    }
-
-    const fn dark() -> Self {
-        Self {
-            bg_window: egui::Color32::from_rgb(23, 22, 21),            // #171615
-            bg_card: egui::Color32::from_rgb(33, 32, 30),              // #21201E
-            bg_input: egui::Color32::from_rgb(27, 26, 24),             // #1B1A18
-            bg_callout: egui::Color32::from_rgb(40, 38, 36),           // #282624
-            bg_callout_hover: egui::Color32::from_rgb(49, 47, 44),     // #312F2C
-            bg_callout_active: egui::Color32::from_rgb(57, 54, 50),    // #393632
-            bg_keycap: egui::Color32::from_rgb(46, 44, 41),            // #2E2C29
-            bg_track: egui::Color32::from_rgb(53, 50, 47),             // #35322F
-            border_subtle: egui::Color32::from_rgb(51, 48, 44),        // #33302C
-            border_med: egui::Color32::from_rgb(71, 67, 62),           // #47433E
-            text_primary: egui::Color32::from_rgb(242, 240, 236),      // #F2F0EC
-            text_muted: egui::Color32::from_rgb(161, 155, 147),        // #A19B93
-            accent_fill: egui::Color32::from_rgb(230, 226, 220),       // #E6E2DC
-            btn_sec_bg: egui::Color32::from_rgb(46, 44, 41),           // #2E2C29
-            btn_sec_hover: egui::Color32::from_rgb(58, 55, 51),        // #3A3733
-            dot_ready: egui::Color32::from_rgb(92, 166, 116),          // #5CA674
-            dot_busy: egui::Color32::from_rgb(214, 165, 75),           // #D6A54B
-            dot_off: egui::Color32::from_rgb(126, 120, 113),           // #7E7871
-            error_bg: egui::Color32::from_rgb(51, 31, 30),             // #331F1E
-            error_border: egui::Color32::from_rgb(110, 59, 54),        // #6E3B36
-            error_text: egui::Color32::from_rgb(240, 138, 130),        // #F08A82
-            selection_bg: egui::Color32::from_rgb(74, 70, 64),         // #4A4640
-            power_border_off: egui::Color32::from_rgb(163, 158, 150),  // #A39E96
-        }
-    }
-
-    fn for_mode(dark_mode: bool) -> Self {
-        if dark_mode {
-            Self::dark()
-        } else {
-            Self::light()
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-enum AppPhase {
-    Off,
-    Downloading {
-        downloaded: u64,
-        total: Option<u64>,
-        speed_bps: f64,
-        dest_display: String,
-    },
-    Loading,
-    On {
-        backend_desc: String,
-    },
-    Fixing {
-        backend_desc: String,
-    },
-    Unloading,
-}
-
-impl AppPhase {
-    fn is_on(&self) -> bool {
-        matches!(self, AppPhase::On { .. } | AppPhase::Fixing { .. })
-    }
-
-    fn is_busy(&self) -> bool {
-        matches!(
-            self,
-            AppPhase::Downloading { .. }
-                | AppPhase::Loading
-                | AppPhase::Fixing { .. }
-                | AppPhase::Unloading
-        )
-    }
-}
+use crate::widgets::{
+    apply_theme_visuals, card_frame, chip_button, draw_neutral_progress_bar, format_bytes,
+    format_eta, format_speed, power_switch_row, render_hotkey_row, secondary_button,
+    shorten_middle, theme_switch, toggle_switch_row, HotkeyRowAction, ThemeColors,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HotkeyTarget {
@@ -158,109 +35,68 @@ enum HotkeyTarget {
     ToggleHighlight,
 }
 
-struct SharedState {
-    phase: AppPhase,
-    error: Option<String>,
-    notice: String,
-    active_model_path: Option<PathBuf>,
-    force_quit: bool,
-    download_cancel: Option<Arc<AtomicBool>>,
-    picked_folder: Option<PathBuf>,
-    hotkey_revert: Option<HotkeyBinding>,
-    toggle_power_hotkey_revert: Option<Option<HotkeyBinding>>,
-    toggle_highlight_hotkey_revert: Option<Option<HotkeyBinding>>,
-    highlight_sync: Option<bool>,
+struct ModelFileCache {
+    path: Option<PathBuf>,
+    checked_at: Instant,
+    cached_size: Option<u64>,
+    part_size: Option<u64>,
+    last_phase_tag: u8,
 }
 
-impl Default for SharedState {
+impl Default for ModelFileCache {
     fn default() -> Self {
         Self {
-            phase: AppPhase::Off,
-            error: None,
-            notice: "VRAM free".to_string(),
-            active_model_path: None,
-            force_quit: false,
-            download_cancel: None,
-            picked_folder: None,
-            hotkey_revert: None,
-            toggle_power_hotkey_revert: None,
-            toggle_highlight_hotkey_revert: None,
-            highlight_sync: None,
+            path: None,
+            checked_at: Instant::now() - Duration::from_secs(10),
+            cached_size: None,
+            part_size: None,
+            last_phase_tag: u8::MAX,
         }
     }
 }
 
-enum CtrlCmd {
-    ToggleOnOff,
-    TurnOn(String, PathBuf),
-    TurnOff,
-    DownloadModel(String, PathBuf),
-    CancelDownload,
-    UpdateHotkey(HotkeyBinding),
-    UpdateTogglePowerHotkey(Option<HotkeyBinding>),
-    UpdateToggleHighlightHotkey(Option<HotkeyBinding>),
-    ShowWindow,
-    Quit,
-    DownloadProgress {
-        progress: DownloadProgress,
-    },
-    DownloadFinished {
-        dest: PathBuf,
-        res: anyhow::Result<()>,
-        turn_on_after: bool,
-        restore_on_cancel: bool,
-    },
-    LoadFinished {
-        dest: PathBuf,
-        res: anyhow::Result<LoadInfo>,
-    },
-    Hotkey(HotkeyEvent),
-    ShutdownController,
-}
-
-fn format_bytes(bytes: u64) -> String {
-    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
-    const MB: f64 = 1024.0 * 1024.0;
-    if (bytes as f64) >= GB * 0.95 {
-        format!("{:.2} GB", (bytes as f64) / GB)
-    } else {
-        format!("{:.1} MB", (bytes as f64) / MB)
+fn phase_tag(phase: &AppPhase) -> u8 {
+    match phase {
+        AppPhase::Off => 0,
+        AppPhase::Downloading { .. } => 1,
+        AppPhase::Loading => 2,
+        AppPhase::On { .. } => 3,
+        AppPhase::Fixing { .. } => 4,
+        AppPhase::Unloading => 5,
     }
 }
 
-fn format_speed(bps: f64) -> String {
-    const MB: f64 = 1024.0 * 1024.0;
-    if bps <= 1.0 {
-        "— MB/s".to_string()
-    } else {
-        format!("{:.1} MB/s", bps / MB)
+impl ModelFileCache {
+    fn invalidate(&mut self) {
+        self.last_phase_tag = u8::MAX;
     }
-}
 
-fn format_eta(downloaded: u64, total: Option<u64>, speed_bps: f64) -> Option<String> {
-    let total = total?;
-    if total <= downloaded || speed_bps <= 1024.0 {
-        return None;
-    }
-    let secs = ((total - downloaded) as f64 / speed_bps).ceil() as u64;
-    if secs < 60 {
-        Some(format!("~{secs}s left"))
-    } else {
-        let mins = secs / 60;
-        let rem = secs % 60;
-        Some(format!("~{mins}m {rem:02}s left"))
-    }
-}
+    fn get(
+        &mut self,
+        preview_path: Option<&PathBuf>,
+        phase: &AppPhase,
+    ) -> (Option<u64>, Option<u64>) {
+        let tag = phase_tag(phase);
+        let path_changed = self.path.as_ref() != preview_path;
+        let phase_changed = self.last_phase_tag != tag;
+        let ttl_expired = self.checked_at.elapsed() >= Duration::from_secs(1);
 
-fn shorten_middle(text: &str, max_chars: usize) -> String {
-    let count = text.chars().count();
-    if count <= max_chars || max_chars < 12 {
-        return text.to_string();
+        if path_changed || phase_changed || ttl_expired {
+            self.path = preview_path.cloned();
+            self.last_phase_tag = tag;
+            self.checked_at = Instant::now();
+            self.cached_size = preview_path
+                .and_then(|p| fs::metadata(p).ok())
+                .map(|m| m.len());
+            self.part_size = preview_path
+                .map(|p| partial_download_path(p))
+                .and_then(|p| fs::metadata(p).ok())
+                .map(|m| m.len())
+                .filter(|&sz| sz > 0);
+        }
+
+        (self.cached_size, self.part_size)
     }
-    let keep = (max_chars - 3) / 2;
-    let start: String = text.chars().take(keep).collect();
-    let end: String = text.chars().skip(count - keep).collect();
-    format!("{start}...{end}")
 }
 
 fn egui_key_to_vk(key: egui::Key) -> Option<u32> {
@@ -348,6 +184,7 @@ pub struct KeyboardLlmApp {
     dir_input: String,
     shared_url: Arc<Mutex<String>>,
     shared_dir: Arc<Mutex<PathBuf>>,
+    shared_compute_mode: Arc<Mutex<ComputeMode>>,
     shared_hotkey: Arc<Mutex<HotkeyBinding>>,
     shared_highlighted_only: Arc<AtomicBool>,
     shared_show_notifications: Arc<AtomicBool>,
@@ -359,6 +196,8 @@ pub struct KeyboardLlmApp {
     hwnd_raw: isize,
     last_saved_window: Option<WindowState>,
     last_window_change: Option<Instant>,
+    config_dirty_since: Option<Instant>,
+    file_cache: ModelFileCache,
     icon_tex_off: egui::TextureHandle,
     icon_tex_on: egui::TextureHandle,
     last_viewport_active: bool,
@@ -381,6 +220,7 @@ impl KeyboardLlmApp {
 
         let shared_url = Arc::new(Mutex::new(url_input.clone()));
         let shared_dir = Arc::new(Mutex::new(effective_dir));
+        let shared_compute_mode = Arc::new(Mutex::new(config.compute_mode));
         let shared_hotkey = Arc::new(Mutex::new(config.hotkey));
         let shared_highlighted_only = Arc::new(AtomicBool::new(config.fix_highlighted_only));
         let shared_show_notifications = Arc::new(AtomicBool::new(config.show_notifications));
@@ -468,6 +308,7 @@ impl KeyboardLlmApp {
         let state_ctrl = Arc::clone(&state);
         let url_ctrl = Arc::clone(&shared_url);
         let dir_ctrl = Arc::clone(&shared_dir);
+        let compute_ctrl = Arc::clone(&shared_compute_mode);
         let hk_ctrl = Arc::clone(&shared_hotkey);
         let hl_ctrl = Arc::clone(&shared_highlighted_only);
         let notif_ctrl = Arc::clone(&shared_show_notifications);
@@ -486,6 +327,7 @@ impl KeyboardLlmApp {
                     state_ctrl,
                     url_ctrl,
                     dir_ctrl,
+                    compute_ctrl,
                     hk_ctrl,
                     init_power_hk,
                     init_hl_hk,
@@ -505,6 +347,7 @@ impl KeyboardLlmApp {
             dir_input,
             shared_url,
             shared_dir,
+            shared_compute_mode,
             shared_hotkey,
             shared_highlighted_only,
             shared_show_notifications,
@@ -516,6 +359,8 @@ impl KeyboardLlmApp {
             hwnd_raw,
             last_saved_window: initial_window,
             last_window_change: None,
+            config_dirty_since: None,
+            file_cache: ModelFileCache::default(),
             icon_tex_off: tex_off,
             icon_tex_on: tex_on,
             last_viewport_active: false,
@@ -545,7 +390,7 @@ impl KeyboardLlmApp {
                 x,
                 y,
                 width: size.x.max(470.0),
-                height: size.y.max(565.0),
+                height: size.y.max(595.0),
                 maximized: true,
             });
             WindowState {
@@ -557,7 +402,7 @@ impl KeyboardLlmApp {
                 x,
                 y,
                 width: size.x.max(470.0),
-                height: size.y.max(565.0),
+                height: size.y.max(595.0),
                 maximized: false,
             }
         };
@@ -576,8 +421,22 @@ impl KeyboardLlmApp {
         }
     }
 
-    fn save_current_config(&self) {
+    fn save_current_config(&mut self) {
+        self.config_dirty_since = None;
         let _ = save_config(&self.config);
+    }
+
+    fn mark_config_dirty(&mut self, ctx: &egui::Context) {
+        self.config_dirty_since = Some(Instant::now());
+        ctx.request_repaint_after(Duration::from_millis(420));
+    }
+
+    fn flush_dirty_config(&mut self, force: bool) {
+        if let Some(dirty_at) = self.config_dirty_since {
+            if force || dirty_at.elapsed() >= Duration::from_millis(400) {
+                self.save_current_config();
+            }
+        }
     }
 
     fn apply_storage_dir(&mut self, dir: PathBuf) {
@@ -589,6 +448,7 @@ impl KeyboardLlmApp {
         }
         self.dir_input = dir.to_string_lossy().into_owned();
         *self.shared_dir.lock().unwrap() = dir;
+        self.file_cache.invalidate();
         self.save_current_config();
     }
 
@@ -596,6 +456,7 @@ impl KeyboardLlmApp {
         self.url_input = url.to_string();
         self.config.model_url = self.url_input.clone();
         *self.shared_url.lock().unwrap() = self.url_input.clone();
+        self.file_cache.invalidate();
         self.save_current_config();
     }
 
@@ -648,6 +509,12 @@ impl KeyboardLlmApp {
         let Some(target) = self.recording_hotkey else {
             return;
         };
+        if ctx.wants_keyboard_input() {
+            self.recording_hotkey = None;
+            self.shared_recording.store(false, Ordering::Relaxed);
+            self.hotkey_hint = None;
+            return;
+        }
         let events = ctx.input(|i| i.events.clone());
         for ev in events {
             if let egui::Event::Key {
@@ -712,19 +579,26 @@ impl KeyboardLlmApp {
             }
         }
     }
-}
 
-impl Drop for KeyboardLlmApp {
-    fn drop(&mut self) {
+    fn persist_pending_on_exit(&mut self) {
         let latest_hl = self.shared_highlighted_only.load(Ordering::Relaxed);
         let hl_changed = self.config.fix_highlighted_only != latest_hl;
         if hl_changed {
             self.config.fix_highlighted_only = latest_hl;
         }
-        if hl_changed || self.config.window != self.last_saved_window {
+        if hl_changed
+            || self.config_dirty_since.is_some()
+            || self.config.window != self.last_saved_window
+        {
             self.save_current_config();
             self.last_saved_window = self.config.window;
         }
+    }
+}
+
+impl Drop for KeyboardLlmApp {
+    fn drop(&mut self) {
+        self.persist_pending_on_exit();
         let _ = self.ctrl_tx.send(CtrlCmd::ShutdownController);
         if let Some(join) = self.ctrl_join.take() {
             let _ = join.join();
@@ -738,6 +612,7 @@ impl Drop for KeyboardLlmApp {
 impl eframe::App for KeyboardLlmApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.track_window_geometry(ctx);
+        self.flush_dirty_config(false);
 
         if ctx.input(|i| i.viewport().close_requested()) {
             let force_quit = self.state.lock().unwrap().force_quit;
@@ -747,15 +622,7 @@ impl eframe::App for KeyboardLlmApp {
                     shell.hide_window();
                 }
             } else {
-                let latest_hl = self.shared_highlighted_only.load(Ordering::Relaxed);
-                let hl_changed = self.config.fix_highlighted_only != latest_hl;
-                if hl_changed {
-                    self.config.fix_highlighted_only = latest_hl;
-                }
-                if hl_changed || self.config.window != self.last_saved_window {
-                    self.save_current_config();
-                    self.last_saved_window = self.config.window;
-                }
+                self.persist_pending_on_exit();
                 let _ = self.ctrl_tx.send(CtrlCmd::ShutdownController);
             }
         }
@@ -767,6 +634,7 @@ impl eframe::App for KeyboardLlmApp {
             error,
             notice,
             active_model_path,
+            active_compute_mode,
             picked_folder,
             hotkey_revert,
             toggle_power_hotkey_revert,
@@ -779,6 +647,7 @@ impl eframe::App for KeyboardLlmApp {
                 s.error.clone(),
                 s.notice.clone(),
                 s.active_model_path.clone(),
+                s.active_compute_mode,
                 s.picked_folder.take(),
                 s.hotkey_revert.take(),
                 s.toggle_power_hotkey_revert.take(),
@@ -827,20 +696,13 @@ impl eframe::App for KeyboardLlmApp {
         let preview_path = normalized_preview
             .as_deref()
             .map(|u| local_model_path(&storage_dir, u));
-        let cached_size = preview_path
-            .as_ref()
-            .and_then(|p| fs::metadata(p).ok())
-            .map(|m| m.len());
-        let part_path = preview_path
-            .as_ref()
-            .map(|p| p.with_extension("gguf.part"));
-        let part_size = part_path
-            .as_ref()
-            .and_then(|p| fs::metadata(p).ok())
-            .map(|m| m.len())
-            .filter(|&sz| sz > 0);
+        let (cached_size, part_size) = self.file_cache.get(preview_path.as_ref(), &phase);
+        let part_path = preview_path.as_ref().map(|p| partial_download_path(p));
         let is_different_from_active =
             is_on && preview_path.is_some() && preview_path != active_model_path;
+        let is_compute_changed = is_on
+            && !is_different_from_active
+            && Some(self.config.compute_mode) != active_compute_mode;
 
         if self.config.dark_mode != self.applied_dark_mode {
             apply_theme_visuals(ctx, self.config.dark_mode);
@@ -990,11 +852,15 @@ impl eframe::App for KeyboardLlmApp {
                                     self.config.model_url = norm.clone();
                                     *self.shared_url.lock().unwrap() = norm;
                                     self.save_current_config();
+                                } else {
+                                    self.flush_dirty_config(true);
                                 }
                                 let dir = self.current_storage_dir();
-                                let _ = self
-                                    .ctrl_tx
-                                    .send(CtrlCmd::TurnOn(self.url_input.clone(), dir));
+                                let _ = self.ctrl_tx.send(CtrlCmd::TurnOn(
+                                    self.url_input.clone(),
+                                    dir,
+                                    self.config.compute_mode,
+                                ));
                             }
 
                             if cached_size.is_none() {
@@ -1015,6 +881,7 @@ impl eframe::App for KeyboardLlmApp {
                                                     .clicked()
                                                 {
                                                     let _ = fs::remove_file(part);
+                                                    self.file_cache.invalidate();
                                                 }
                                             },
                                         );
@@ -1115,7 +982,7 @@ impl eframe::App for KeyboardLlmApp {
                             let _ = power_switch_row(
                                 ui,
                                 &theme,
-                                "Loading model into GPU...",
+                                "Loading model...",
                                 true,
                                 false,
                                 true,
@@ -1131,7 +998,7 @@ impl eframe::App for KeyboardLlmApp {
                             let _ = power_switch_row(
                                 ui,
                                 &theme,
-                                "Unloading VRAM...",
+                                "Unloading model...",
                                 false,
                                 false,
                                 true,
@@ -1269,7 +1136,10 @@ impl eframe::App for KeyboardLlmApp {
                                     .color(theme.text_muted),
                             );
                         });
-                    } else if !matches!(phase, AppPhase::Downloading { .. } | AppPhase::Loading) {
+                    } else if !matches!(
+                        phase,
+                        AppPhase::Downloading { .. } | AppPhase::Loading | AppPhase::Unloading
+                    ) {
                         ui.label(
                             egui::RichText::new(&notice)
                                 .size(11.5)
@@ -1348,8 +1218,11 @@ impl eframe::App for KeyboardLlmApp {
                         *self.shared_url.lock().unwrap() = self.url_input.clone();
                         if let Ok(norm) = normalize_model_url(&self.url_input) {
                             self.config.model_url = norm;
-                            self.save_current_config();
+                            self.mark_config_dirty(ctx);
                         }
+                    }
+                    if resp.lost_focus() {
+                        self.flush_dirty_config(true);
                     }
 
                     if let Some(norm) = normalized_preview.as_deref() {
@@ -1369,6 +1242,8 @@ impl eframe::App for KeyboardLlmApp {
                             } else {
                                 "Download & Switch"
                             }
+                        } else if is_compute_changed {
+                            "Reload Model"
                         } else if cached_size.is_some() {
                             "Model Ready"
                         } else if part_size.is_some() {
@@ -1379,7 +1254,9 @@ impl eframe::App for KeyboardLlmApp {
 
                         let can_click_dl = !is_downloading
                             && !is_busy_loading
-                            && (cached_size.is_none() || is_different_from_active);
+                            && (cached_size.is_none()
+                                || is_different_from_active
+                                || is_compute_changed);
 
                         if ui
                             .add_enabled(
@@ -1402,48 +1279,86 @@ impl eframe::App for KeyboardLlmApp {
                                 self.config.model_url = norm.clone();
                                 *self.shared_url.lock().unwrap() = norm;
                                 self.save_current_config();
+                            } else {
+                                self.flush_dirty_config(true);
                             }
                             let dir = self.current_storage_dir();
-                            let _ = self
-                                .ctrl_tx
-                                .send(CtrlCmd::DownloadModel(self.url_input.clone(), dir));
+                            let _ = self.ctrl_tx.send(CtrlCmd::DownloadModel(
+                                self.url_input.clone(),
+                                dir,
+                                self.config.compute_mode,
+                            ));
                         }
 
                         for preset in MODEL_PRESETS {
                             let is_selected = normalized_preview.as_deref() == Some(preset.url);
-                            let label = if is_selected {
-                                egui::RichText::new(preset.label)
-                                    .size(12.0)
-                                    .strong()
-                                    .color(theme.text_primary)
-                            } else {
-                                egui::RichText::new(preset.label)
-                                    .size(12.0)
-                                    .color(theme.text_muted)
-                            };
-                            let (fill, stroke_color) = if is_selected {
-                                (theme.btn_sec_bg, theme.text_muted)
-                            } else {
-                                (egui::Color32::TRANSPARENT, theme.border_subtle)
-                            };
-
-                            if ui
-                                .add_enabled(
-                                    !is_downloading,
-                                    egui::Button::new(label)
-                                        .fill(fill)
-                                        .stroke(egui::Stroke::new(1.0_f32, stroke_color))
-                                        .corner_radius(egui::CornerRadius::same(6))
-                                        .min_size(egui::vec2(preset.min_width, 27.0)),
-                                )
-                                .on_hover_text(preset.tooltip)
-                                .clicked()
+                            if chip_button(
+                                ui,
+                                &theme,
+                                preset.label,
+                                is_selected,
+                                !is_downloading,
+                                egui::vec2(preset.min_width, 27.0),
+                                12.0,
+                            )
+                            .on_hover_text(preset.tooltip)
+                            .clicked()
                                 && self.url_input.trim() != preset.url
                             {
                                 self.apply_model_url(preset.url);
                                 ctx.request_repaint();
                             }
                         }
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Compute")
+                                .size(12.0)
+                                .color(theme.text_muted),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            let can_change_compute = !is_downloading && !is_busy_loading;
+
+                            if chip_button(
+                                ui,
+                                &theme,
+                                "CPU Only",
+                                self.config.compute_mode == ComputeMode::Cpu,
+                                can_change_compute,
+                                egui::vec2(74.0, 24.0),
+                                11.5,
+                            )
+                            .on_hover_text(
+                                "Run inference strictly on CPU (avoids Vulkan/iGPU driver overhead)",
+                            )
+                            .clicked()
+                                && self.config.compute_mode != ComputeMode::Cpu
+                            {
+                                self.config.compute_mode = ComputeMode::Cpu;
+                                *self.shared_compute_mode.lock().unwrap() = ComputeMode::Cpu;
+                                self.save_current_config();
+                            }
+
+                            if chip_button(
+                                ui,
+                                &theme,
+                                "Auto",
+                                self.config.compute_mode == ComputeMode::Auto,
+                                can_change_compute,
+                                egui::vec2(56.0, 24.0),
+                                11.5,
+                            )
+                            .on_hover_text("Use Vulkan GPU if available with automatic CPU fallback")
+                            .clicked()
+                                && self.config.compute_mode != ComputeMode::Auto
+                            {
+                                self.config.compute_mode = ComputeMode::Auto;
+                                *self.shared_compute_mode.lock().unwrap() = ComputeMode::Auto;
+                                self.save_current_config();
+                            }
+                        });
                     });
 
                     ui.add_space(2.0);
@@ -1487,7 +1402,10 @@ impl eframe::App for KeyboardLlmApp {
                                 Some(self.dir_input.trim().to_string())
                             };
                             *self.shared_dir.lock().unwrap() = dir;
-                            self.save_current_config();
+                            self.mark_config_dirty(ctx);
+                        }
+                        if dir_resp.lost_focus() {
+                            self.flush_dirty_config(true);
                         }
 
                         let browsing = self.browsing_folder.load(Ordering::Relaxed);
@@ -1597,1117 +1515,5 @@ impl eframe::App for KeyboardLlmApp {
                     });
                 });
             });
-    }
-}
-
-fn draw_neutral_progress_bar(
-    ui: &mut egui::Ui,
-    theme: &ThemeColors,
-    frac: f32,
-    indeterminate: bool,
-) {
-    let width = ui.available_width();
-    let height = 10.0;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-    let radius = egui::CornerRadius::same(5);
-    ui.painter().rect_filled(rect, radius, theme.bg_track);
-
-    if indeterminate {
-        ui.ctx().request_repaint();
-        let t = ui.input(|i| i.time) as f32;
-        let seg_w = (width * 0.28).max(36.0);
-        let travel = (width - seg_w).max(1.0);
-        let pos = ((t * 0.9).sin() * 0.5 + 0.5) * travel;
-        let fill_rect = egui::Rect::from_min_size(
-            egui::pos2(rect.min.x + pos, rect.min.y),
-            egui::vec2(seg_w, height),
-        );
-        ui.painter()
-            .rect_filled(fill_rect, radius, theme.accent_fill);
-    } else if frac > 0.001 {
-        let fill_w = (width * frac.clamp(0.0, 1.0)).max(height);
-        let fill_rect =
-            egui::Rect::from_min_size(rect.min, egui::vec2(fill_w.min(width), height));
-        ui.painter()
-            .rect_filled(fill_rect, radius, theme.accent_fill);
-    }
-}
-
-fn card_frame(theme: &ThemeColors) -> egui::Frame {
-    egui::Frame::new()
-        .fill(theme.bg_card)
-        .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
-        .corner_radius(egui::CornerRadius::same(10))
-        .inner_margin(egui::Margin::same(14))
-}
-
-fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
-    let t = t.clamp(0.0, 1.0);
-    let mix = |x: u8, y: u8| -> u8 {
-        ((x as f32) + ((y as f32) - (x as f32)) * t)
-            .round()
-            .clamp(0.0, 255.0) as u8
-    };
-    egui::Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
-}
-
-fn draw_sun_icon(painter: &egui::Painter, center: egui::Pos2, radius: f32, color: egui::Color32) {
-    painter.circle_filled(center, radius * 0.43, color);
-    let inner_r = radius * 0.67;
-    let outer_r = radius;
-    let stroke = egui::Stroke::new(1.3_f32, color);
-    for i in 0..8 {
-        let angle = (i as f32) * std::f32::consts::FRAC_PI_4;
-        let (s, c) = angle.sin_cos();
-        let p0 = egui::pos2(center.x + c * inner_r, center.y + s * inner_r);
-        let p1 = egui::pos2(center.x + c * outer_r, center.y + s * outer_r);
-        painter.line_segment([p0, p1], stroke);
-    }
-}
-
-fn draw_moon_icon(
-    painter: &egui::Painter,
-    center: egui::Pos2,
-    radius: f32,
-    color: egui::Color32,
-    cutout_bg: egui::Color32,
-) {
-    painter.circle_filled(center, radius * 0.88, color);
-    let cutout_center = egui::pos2(center.x + radius * 0.34, center.y - radius * 0.22);
-    painter.circle_filled(cutout_center, radius * 0.78, cutout_bg);
-}
-
-fn theme_switch(ui: &mut egui::Ui, is_dark: bool, theme: &ThemeColors) -> egui::Response {
-    let desired_size = egui::vec2(52.0, 26.0);
-    let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
-    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-    let tooltip = if is_dark {
-        "Switch to Light Mode"
-    } else {
-        "Switch to Dark Mode"
-    };
-    let response = response.on_hover_text(tooltip);
-
-    let t = ui.ctx().animate_bool_with_time(response.id, is_dark, 0.16);
-
-    let track_light = egui::Color32::WHITE;
-    let track_dark = egui::Color32::from_rgb(44, 42, 39); // #2C2A27
-    let border_light = egui::Color32::from_rgb(200, 196, 190); // #C8C4BE
-    let border_dark = egui::Color32::from_rgb(78, 74, 69); // #4E4A45
-
-    let track_fill = lerp_color(track_light, track_dark, t);
-    let mut track_border = lerp_color(border_light, border_dark, t);
-    if response.hovered() {
-        track_border = lerp_color(track_border, theme.text_muted, 0.35);
-    }
-
-    let radius = egui::CornerRadius::same(13);
-    let painter = ui.painter();
-    painter.rect_filled(rect, radius, track_fill);
-    painter.rect_stroke(
-        rect,
-        radius,
-        egui::Stroke::new(1.2_f32, track_border),
-        egui::StrokeKind::Inside,
-    );
-
-    let cy = rect.center().y;
-    let left_slot = egui::pos2(rect.left() + 13.0, cy);
-    let right_slot = egui::pos2(rect.right() - 13.0, cy);
-
-    if t > 0.05 {
-        let sun_muted = lerp_color(track_fill, egui::Color32::from_rgb(140, 134, 126), t);
-        draw_sun_icon(painter, left_slot, 5.4, sun_muted);
-    }
-    if t < 0.95 {
-        let moon_muted = lerp_color(track_fill, egui::Color32::from_rgb(158, 152, 144), 1.0 - t);
-        draw_moon_icon(painter, right_slot, 5.2, moon_muted, track_fill);
-    }
-
-    let knob_x = egui::lerp(left_slot.x..=right_slot.x, t);
-    let knob_center = egui::pos2(knob_x, cy);
-    painter.circle_filled(
-        egui::pos2(knob_center.x, knob_center.y + 1.2),
-        10.2,
-        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 20),
-    );
-    painter.circle_filled(
-        egui::pos2(knob_center.x, knob_center.y + 0.6),
-        9.9,
-        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 30),
-    );
-    let knob_fill = egui::Color32::WHITE;
-    painter.circle_filled(knob_center, 9.8, knob_fill);
-    painter.circle_stroke(
-        knob_center,
-        9.8,
-        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(214, 210, 203)),
-    );
-
-    let dark_icon = egui::Color32::from_rgb(34, 32, 30); // #22201E
-    if t < 0.5 {
-        let weight = (1.0 - t * 2.0).clamp(0.0, 1.0);
-        let icon_col = lerp_color(knob_fill, dark_icon, weight);
-        draw_sun_icon(painter, knob_center, 5.3, icon_col);
-    } else {
-        let weight = (t * 2.0 - 1.0).clamp(0.0, 1.0);
-        let icon_col = lerp_color(knob_fill, dark_icon, weight);
-        draw_moon_icon(painter, knob_center, 5.2, icon_col, knob_fill);
-    }
-
-    response
-}
-
-fn draw_pill_switch(
-    ui: &egui::Ui,
-    theme: &ThemeColors,
-    rect: egui::Rect,
-    id: egui::Id,
-    is_on: bool,
-    enabled: bool,
-    hovered: bool,
-) {
-    let t = ui.ctx().animate_bool_with_time(id, is_on, 0.16);
-
-    let track_off = egui::Color32::WHITE;
-    let track_on = egui::Color32::from_rgb(77, 150, 98); // #4D9662
-    let border_off = theme.power_border_off;
-    let border_on = egui::Color32::from_rgb(67, 133, 86); // #438556
-
-    let mut track_fill = lerp_color(track_off, track_on, t);
-    let mut track_border = lerp_color(border_off, border_on, t);
-    if !enabled {
-        track_fill = lerp_color(track_fill, theme.bg_track, 0.45);
-        track_border = lerp_color(track_border, theme.border_med, 0.45);
-    } else if hovered {
-        track_border = lerp_color(track_border, theme.text_muted, 0.25);
-    }
-
-    let radius = egui::CornerRadius::same(15);
-    let painter = ui.painter();
-    painter.rect_filled(rect, radius, track_fill);
-    painter.rect_stroke(
-        rect,
-        radius,
-        egui::Stroke::new(1.2_f32, track_border),
-        egui::StrokeKind::Inside,
-    );
-
-    let cx = egui::lerp((rect.left() + 15.0)..=(rect.right() - 15.0), t);
-    let cy = rect.center().y;
-    painter.circle_filled(
-        egui::pos2(cx, cy + 1.5),
-        11.8,
-        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18),
-    );
-    painter.circle_filled(
-        egui::pos2(cx, cy + 0.8),
-        11.5,
-        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 28),
-    );
-    let knob_fill = if enabled {
-        egui::Color32::WHITE
-    } else {
-        egui::Color32::from_rgb(245, 244, 242)
-    };
-    painter.circle_filled(egui::pos2(cx, cy), 11.3, knob_fill);
-    painter.circle_stroke(
-        egui::pos2(cx, cy),
-        11.3,
-        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(220, 217, 212)),
-    );
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HotkeyRowAction {
-    None,
-    ToggleRecord,
-    Secondary,
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_hotkey_row(
-    ui: &mut egui::Ui,
-    theme: &ThemeColors,
-    badge_label: Option<String>,
-    description: &str,
-    is_recording: bool,
-    is_busy: bool,
-    secondary_label: Option<&str>,
-    empty_action_label: &str,
-) -> HotkeyRowAction {
-    let mut action = HotkeyRowAction::None;
-    ui.horizontal(|ui| {
-        let has_binding = badge_label.is_some();
-        let (fill, text_color, strong, text) = match badge_label {
-            Some(lbl) => (theme.bg_keycap, theme.text_primary, true, lbl),
-            None => (
-                theme.bg_callout,
-                theme.text_muted,
-                false,
-                "No hotkey set".to_string(),
-            ),
-        };
-        egui::Frame::new()
-            .fill(fill)
-            .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
-            .corner_radius(egui::CornerRadius::same(5))
-            .inner_margin(egui::Margin::symmetric(8, 2))
-            .show(ui, |ui| {
-                let mut rt = egui::RichText::new(text).size(11.5).color(text_color);
-                if strong {
-                    rt = rt.strong();
-                }
-                ui.label(rt);
-            });
-        ui.label(
-            egui::RichText::new(description)
-                .size(12.0)
-                .color(theme.text_muted),
-        );
-
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if let Some(sec_lbl) = secondary_label.filter(|_| !is_recording) {
-                if ui
-                    .add_enabled(
-                        !is_busy,
-                        egui::Button::new(
-                            egui::RichText::new(sec_lbl)
-                                .size(11.0)
-                                .color(theme.text_muted),
-                        )
-                        .fill(egui::Color32::TRANSPARENT)
-                        .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
-                        .corner_radius(egui::CornerRadius::same(5))
-                        .min_size(egui::vec2(48.0, 22.0)),
-                    )
-                    .clicked()
-                {
-                    action = HotkeyRowAction::Secondary;
-                }
-            }
-
-            let action_label = if is_recording {
-                "Press keys... (Esc)"
-            } else if has_binding {
-                "Change Hotkey"
-            } else {
-                empty_action_label
-            };
-            if ui
-                .add_enabled(
-                    !is_busy,
-                    egui::Button::new(
-                        egui::RichText::new(action_label)
-                            .size(11.0)
-                            .color(theme.text_primary),
-                    )
-                    .fill(if is_recording {
-                        theme.bg_keycap
-                    } else {
-                        theme.btn_sec_bg
-                    })
-                    .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
-                    .corner_radius(egui::CornerRadius::same(5))
-                    .min_size(egui::vec2(96.0, 22.0)),
-                )
-                .clicked()
-            {
-                action = HotkeyRowAction::ToggleRecord;
-            }
-        });
-    });
-    action
-}
-
-#[allow(clippy::too_many_arguments)]
-fn switch_row_widget(
-    ui: &mut egui::Ui,
-    theme: &ThemeColors,
-    pill_id: egui::Id,
-    height: f32,
-    font_size: f32,
-    label: &str,
-    is_on: bool,
-    enabled: bool,
-    show_spinner: bool,
-) -> egui::Response {
-    let width = ui.available_width();
-    let sense = if enabled {
-        egui::Sense::click()
-    } else {
-        egui::Sense::hover()
-    };
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), sense);
-    let response = if enabled {
-        response.on_hover_cursor(egui::CursorIcon::PointingHand)
-    } else {
-        response
-    };
-
-    let (box_fill, box_border) = if enabled && response.is_pointer_button_down_on() {
-        (theme.bg_callout_active, theme.border_med)
-    } else if enabled && response.hovered() {
-        (theme.bg_callout_hover, theme.border_med)
-    } else {
-        (theme.bg_callout, theme.border_subtle)
-    };
-
-    let box_radius = egui::CornerRadius::same(8);
-    ui.painter().rect_filled(rect, box_radius, box_fill);
-    ui.painter().rect_stroke(
-        rect,
-        box_radius,
-        egui::Stroke::new(1.0_f32, box_border),
-        egui::StrokeKind::Inside,
-    );
-
-    let text_left = rect.left() + 14.0 + if show_spinner { 24.0 } else { 0.0 };
-    let switch_rect = egui::Rect::from_center_size(
-        egui::pos2(rect.right() - 12.0 - 27.0, rect.center().y),
-        egui::vec2(54.0, 30.0),
-    );
-
-    if show_spinner {
-        let spinner_rect = egui::Rect::from_center_size(
-            egui::pos2(rect.left() + 22.0, rect.center().y),
-            egui::vec2(16.0, 16.0),
-        );
-        ui.put(spinner_rect, egui::Spinner::new().size(15.0));
-    }
-
-    let text_color = if enabled {
-        theme.text_primary
-    } else {
-        theme.text_muted
-    };
-    let avail_text_w = (switch_rect.left() - 10.0 - text_left).max(40.0);
-    let galley = egui::WidgetText::from(
-        egui::RichText::new(label)
-            .size(font_size)
-            .strong()
-            .color(text_color),
-    )
-    .into_galley(
-        ui,
-        Some(egui::TextWrapMode::Truncate),
-        avail_text_w,
-        egui::TextStyle::Button,
-    );
-    let text_pos = egui::pos2(text_left, rect.center().y - galley.size().y * 0.5);
-    ui.painter().galley(text_pos, galley, text_color);
-
-    draw_pill_switch(
-        ui,
-        theme,
-        switch_rect,
-        pill_id,
-        is_on,
-        enabled,
-        response.hovered(),
-    );
-
-    response
-}
-
-fn power_switch_row(
-    ui: &mut egui::Ui,
-    theme: &ThemeColors,
-    label: &str,
-    is_on: bool,
-    enabled: bool,
-    show_spinner: bool,
-) -> egui::Response {
-    switch_row_widget(
-        ui,
-        theme,
-        egui::Id::new("power_toggle_switch"),
-        46.0,
-        14.0,
-        label,
-        is_on,
-        enabled,
-        show_spinner,
-    )
-}
-
-fn toggle_switch_row(
-    ui: &mut egui::Ui,
-    theme: &ThemeColors,
-    pill_id: egui::Id,
-    label: &str,
-    is_on: bool,
-    enabled: bool,
-) -> egui::Response {
-    switch_row_widget(ui, theme, pill_id, 42.0, 13.0, label, is_on, enabled, false)
-}
-
-fn secondary_button(
-    ui: &mut egui::Ui,
-    theme: &ThemeColors,
-    text: &str,
-    height: f32,
-) -> egui::Response {
-    let w = ui.available_width();
-    let btn = egui::Button::new(
-        egui::RichText::new(text)
-            .size(14.0)
-            .strong()
-            .color(theme.text_primary),
-    )
-    .fill(theme.btn_sec_bg)
-    .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
-    .corner_radius(egui::CornerRadius::same(8))
-    .min_size(egui::vec2(w, height));
-    ui.scope(|ui| {
-        ui.visuals_mut().widgets.hovered.bg_fill = theme.btn_sec_hover;
-        ui.visuals_mut().widgets.active.bg_fill = theme.btn_sec_bg;
-        ui.add(btn)
-    })
-    .inner
-}
-
-fn apply_theme_visuals(ctx: &egui::Context, dark_mode: bool) {
-    let theme = ThemeColors::for_mode(dark_mode);
-    let mut v = if dark_mode {
-        egui::Visuals::dark()
-    } else {
-        egui::Visuals::light()
-    };
-    v.window_fill = theme.bg_window;
-    v.panel_fill = theme.bg_window;
-    v.extreme_bg_color = theme.bg_input;
-    v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, theme.text_primary);
-    v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, theme.border_subtle);
-    v.widgets.inactive.bg_fill = theme.bg_input;
-    v.widgets.inactive.weak_bg_fill = theme.bg_input;
-    v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, theme.text_primary);
-    v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, theme.border_med);
-    v.widgets.inactive.corner_radius = egui::CornerRadius::same(6);
-    v.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, theme.text_primary);
-    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, theme.accent_fill);
-    v.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, theme.text_primary);
-    v.widgets.active.bg_stroke = egui::Stroke::new(1.2_f32, theme.accent_fill);
-    v.selection.bg_fill = theme.selection_bg;
-    v.selection.stroke = egui::Stroke::new(1.0_f32, theme.accent_fill);
-    ctx.set_visuals(v);
-}
-
-fn notify_highlight_mode(shell: &ShellBridge, highlighted_only: bool, app_is_on: bool) {
-    let (title, body) = match (highlighted_only, app_is_on) {
-        (true, true) => ("Highlight Mode — On", "Only highlighted text will be fixed"),
-        (true, false) => (
-            "Highlight Mode — On",
-            "Only highlighted text will be fixed · App is off",
-        ),
-        (false, true) => ("Highlight Mode — Off", "Select all & fix mode"),
-        (false, false) => ("Highlight Mode — Off", "Select all & fix mode · App is off"),
-    };
-    shell.notify(title, body, highlighted_only);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn controller_loop(
-    rx: Receiver<CtrlCmd>,
-    tx: Sender<CtrlCmd>,
-    state: Arc<Mutex<SharedState>>,
-    shared_url: Arc<Mutex<String>>,
-    shared_dir: Arc<Mutex<PathBuf>>,
-    shared_hotkey: Arc<Mutex<HotkeyBinding>>,
-    initial_power_hotkey: Option<HotkeyBinding>,
-    initial_highlight_hotkey: Option<HotkeyBinding>,
-    shared_highlighted_only: Arc<AtomicBool>,
-    shared_show_notifications: Arc<AtomicBool>,
-    mut llm: Arc<LlmHandle>,
-    mut hotkey: HotkeyController,
-    shell: Option<ShellBridge>,
-    ctx: egui::Context,
-) {
-    let mut registered_hotkey = *shared_hotkey.lock().unwrap();
-    let mut registered_power_hotkey = initial_power_hotkey;
-    if let Some(hk) = initial_power_hotkey {
-        if let Err(e) = hotkey.set_toggle_power(Some(hk)) {
-            registered_power_hotkey = None;
-            let mut s = state.lock().unwrap();
-            s.toggle_power_hotkey_revert = Some(None);
-            s.error = Some(e.to_string());
-        }
-    }
-    let mut registered_highlight_hotkey = initial_highlight_hotkey;
-    if let Some(hk) = initial_highlight_hotkey {
-        if let Err(e) = hotkey.set_toggle_highlight(Some(hk)) {
-            registered_highlight_hotkey = None;
-            let mut s = state.lock().unwrap();
-            s.toggle_highlight_hotkey_revert = Some(None);
-            s.error = Some(e.to_string());
-        }
-    }
-
-    let sync_shell = |is_on: bool, is_busy: bool, progress: Option<TaskbarProgress>| {
-        if let Some(sh) = shell.as_ref() {
-            if let Some(p) = progress {
-                sh.set_progress(p);
-            }
-            sh.sync_state(is_on, is_busy);
-        }
-        ctx.request_repaint();
-    };
-
-    let start_download = |raw_url: String,
-                          storage_dir: PathBuf,
-                          turn_on_after: bool,
-                          restore_on_cancel: bool,
-                          state: &Arc<Mutex<SharedState>>,
-                          tx: &Sender<CtrlCmd>,
-                          ctx: &egui::Context| {
-        let norm = match normalize_model_url(&raw_url) {
-            Ok(u) => u,
-            Err(e) => {
-                let mut s = state.lock().unwrap();
-                s.error = Some(e.to_string());
-                drop(s);
-                sync_shell(false, false, Some(TaskbarProgress::None));
-                return;
-            }
-        };
-
-        let mut cfg = load_config();
-        cfg.model_url = norm.clone();
-        cfg.model_dir = if storage_dir == default_model_dir() {
-            None
-        } else {
-            Some(storage_dir.to_string_lossy().into_owned())
-        };
-        let _ = save_config(&cfg);
-
-        let dest = local_model_path(&storage_dir, &norm);
-        if dest.exists() {
-            if turn_on_after {
-                let mut s = state.lock().unwrap();
-                s.phase = AppPhase::Loading;
-                s.error = None;
-                s.notice = "Loading model into GPU...".to_string();
-                drop(s);
-                sync_shell(false, true, Some(TaskbarProgress::Indeterminate));
-
-                let llm_c = Arc::clone(&llm);
-                let tx_c = tx.clone();
-                let ctx_c = ctx.clone();
-                let dest_c = dest.clone();
-                let _ = thread::Builder::new()
-                    .name("model-loader".to_string())
-                    .spawn(move || {
-                        let res = llm_c.load(dest_c.clone());
-                        let _ = tx_c.send(CtrlCmd::LoadFinished { dest: dest_c, res });
-                        ctx_c.request_repaint();
-                    });
-            } else {
-                let mut s = state.lock().unwrap();
-                s.notice = "Model already downloaded".to_string();
-                s.error = None;
-                ctx.request_repaint();
-            }
-            return;
-        }
-
-        let cancel = Arc::new(AtomicBool::new(false));
-        {
-            let mut s = state.lock().unwrap();
-            s.phase = AppPhase::Downloading {
-                downloaded: 0,
-                total: None,
-                speed_bps: 0.0,
-                dest_display: dest.to_string_lossy().into_owned(),
-            };
-            s.error = None;
-            s.notice = "Downloading model from Hugging Face...".to_string();
-            s.download_cancel = Some(Arc::clone(&cancel));
-        }
-        sync_shell(false, true, Some(TaskbarProgress::Indeterminate));
-
-        let tx_c = tx.clone();
-        let ctx_c = ctx.clone();
-        let _ = thread::Builder::new()
-            .name("model-downloader".to_string())
-            .spawn(move || {
-                let tx_prog = tx_c.clone();
-                let ctx_prog = ctx_c.clone();
-                let res = download_model(&norm, &dest, cancel, move |progress| {
-                    let _ = tx_prog.send(CtrlCmd::DownloadProgress { progress });
-                    ctx_prog.request_repaint();
-                });
-                let _ = tx_c.send(CtrlCmd::DownloadFinished {
-                    dest,
-                    res,
-                    turn_on_after,
-                    restore_on_cancel,
-                });
-                ctx_c.request_repaint();
-            });
-    };
-
-    while let Ok(cmd) = rx.recv() {
-        match cmd {
-            CtrlCmd::ToggleOnOff => {
-                let is_on_or_busy = {
-                    let s = state.lock().unwrap();
-                    (s.phase.is_on(), s.phase.is_busy())
-                };
-                if is_on_or_busy.1 {
-                    continue;
-                }
-                if is_on_or_busy.0 {
-                    let _ = tx.send(CtrlCmd::TurnOff);
-                } else {
-                    let url = shared_url.lock().unwrap().clone();
-                    let dir = shared_dir.lock().unwrap().clone();
-                    let _ = tx.send(CtrlCmd::TurnOn(url, dir));
-                }
-            }
-            CtrlCmd::TurnOn(raw_url, storage_dir) => {
-                let can_start = {
-                    let s = state.lock().unwrap();
-                    matches!(s.phase, AppPhase::Off)
-                };
-                if !can_start {
-                    continue;
-                }
-                start_download(raw_url, storage_dir, true, false, &state, &tx, &ctx);
-            }
-            CtrlCmd::TurnOff => {
-                let was_on = {
-                    let mut s = state.lock().unwrap();
-                    if !s.phase.is_on() {
-                        false
-                    } else {
-                        s.phase = AppPhase::Unloading;
-                        s.notice = "Unloading VRAM...".to_string();
-                        true
-                    }
-                };
-                if !was_on {
-                    continue;
-                }
-                sync_shell(false, true, Some(TaskbarProgress::Indeterminate));
-
-                hotkey.disable();
-                llm.unload();
-
-                {
-                    let mut s = state.lock().unwrap();
-                    s.phase = AppPhase::Off;
-                    s.active_model_path = None;
-                    s.notice = "VRAM free".to_string();
-                }
-                sync_shell(false, false, Some(TaskbarProgress::None));
-                if shared_show_notifications.load(Ordering::Relaxed) {
-                    if let Some(sh) = shell.as_ref() {
-                        sh.notify("LLM Grammarly — Off", "Turned off · VRAM free", false);
-                    }
-                }
-            }
-            CtrlCmd::DownloadModel(raw_url, storage_dir) => {
-                let (is_on, is_busy) = {
-                    let s = state.lock().unwrap();
-                    (s.phase.is_on(), s.phase.is_busy())
-                };
-                if is_busy {
-                    continue;
-                }
-                if is_on {
-                    hotkey.disable();
-                }
-                start_download(raw_url, storage_dir, is_on, is_on, &state, &tx, &ctx);
-            }
-            CtrlCmd::CancelDownload => {
-                let cancel = state.lock().unwrap().download_cancel.clone();
-                if let Some(c) = cancel {
-                    c.store(true, Ordering::Relaxed);
-                }
-            }
-            CtrlCmd::UpdateHotkey(new_binding) => {
-                let is_on = state.lock().unwrap().phase.is_on();
-                if is_on {
-                    match hotkey.enable(new_binding) {
-                        Ok(()) => {
-                            registered_hotkey = new_binding;
-                            if let Some(sh) = shell.as_ref() {
-                                sh.set_hotkey_label(new_binding.display_label());
-                            }
-                            {
-                                let mut s = state.lock().unwrap();
-                                let backend_desc = match &s.phase {
-                                    AppPhase::On { backend_desc }
-                                    | AppPhase::Fixing { backend_desc } => backend_desc.clone(),
-                                    _ => "GPU".to_string(),
-                                };
-                                s.error = None;
-                                s.notice = format!(
-                                    "{backend_desc} · Ready ({})",
-                                    new_binding.display_label()
-                                );
-                            }
-                            sync_shell(true, false, None);
-                        }
-                        Err(e) => {
-                            let _ = hotkey.enable(registered_hotkey);
-                            {
-                                let mut s = state.lock().unwrap();
-                                s.hotkey_revert = Some(registered_hotkey);
-                                s.error = Some(e.to_string());
-                            }
-                            if let Some(sh) = shell.as_ref() {
-                                sh.set_hotkey_label(registered_hotkey.display_label());
-                            }
-                            sync_shell(true, false, None);
-                        }
-                    }
-                } else {
-                    registered_hotkey = new_binding;
-                    if let Some(sh) = shell.as_ref() {
-                        sh.set_hotkey_label(new_binding.display_label());
-                    }
-                    sync_shell(false, false, None);
-                }
-            }
-            CtrlCmd::UpdateTogglePowerHotkey(next_binding) => {
-                match hotkey.set_toggle_power(next_binding) {
-                    Ok(()) => {
-                        registered_power_hotkey = next_binding;
-                        state.lock().unwrap().error = None;
-                        ctx.request_repaint();
-                    }
-                    Err(e) => {
-                        let _ = hotkey.set_toggle_power(registered_power_hotkey);
-                        let mut s = state.lock().unwrap();
-                        s.toggle_power_hotkey_revert = Some(registered_power_hotkey);
-                        s.error = Some(e.to_string());
-                        ctx.request_repaint();
-                    }
-                }
-            }
-            CtrlCmd::UpdateToggleHighlightHotkey(next_binding) => {
-                match hotkey.set_toggle_highlight(next_binding) {
-                    Ok(()) => {
-                        registered_highlight_hotkey = next_binding;
-                        state.lock().unwrap().error = None;
-                        ctx.request_repaint();
-                    }
-                    Err(e) => {
-                        let _ = hotkey.set_toggle_highlight(registered_highlight_hotkey);
-                        let mut s = state.lock().unwrap();
-                        s.toggle_highlight_hotkey_revert = Some(registered_highlight_hotkey);
-                        s.error = Some(e.to_string());
-                        ctx.request_repaint();
-                    }
-                }
-            }
-            CtrlCmd::DownloadProgress { progress } => {
-                {
-                    let mut s = state.lock().unwrap();
-                    if let AppPhase::Downloading {
-                        downloaded,
-                        total,
-                        speed_bps,
-                        ..
-                    } = &mut s.phase
-                    {
-                        *downloaded = progress.downloaded;
-                        *total = progress.total;
-                        *speed_bps = progress.speed_bps;
-                    }
-                }
-                if let Some(sh) = shell.as_ref() {
-                    let tb = match progress.total {
-                        Some(tot) if tot > 0 => TaskbarProgress::Determinate {
-                            current: progress.downloaded,
-                            total: tot,
-                        },
-                        _ => TaskbarProgress::Indeterminate,
-                    };
-                    sh.set_progress(tb);
-                }
-            }
-            CtrlCmd::DownloadFinished {
-                dest,
-                res,
-                turn_on_after,
-                restore_on_cancel,
-            } => {
-                {
-                    let mut s = state.lock().unwrap();
-                    s.download_cancel = None;
-                }
-                if state.lock().unwrap().force_quit {
-                    continue;
-                }
-                match res {
-                    Ok(()) => {
-                        if turn_on_after {
-                            {
-                                let mut s = state.lock().unwrap();
-                                s.phase = AppPhase::Loading;
-                                s.error = None;
-                                s.notice = "Loading model into GPU...".to_string();
-                            }
-                            sync_shell(false, true, Some(TaskbarProgress::Indeterminate));
-
-                            let llm_c = Arc::clone(&llm);
-                            let tx_c = tx.clone();
-                            let ctx_c = ctx.clone();
-                            let _ = thread::Builder::new()
-                                .name("model-loader".to_string())
-                                .spawn(move || {
-                                    let res = llm_c.load(dest.clone());
-                                    let _ = tx_c.send(CtrlCmd::LoadFinished { dest, res });
-                                    ctx_c.request_repaint();
-                                });
-                        } else {
-                            {
-                                let mut s = state.lock().unwrap();
-                                s.phase = AppPhase::Off;
-                                s.error = None;
-                                s.notice = "Model downloaded and ready".to_string();
-                            }
-                            sync_shell(false, false, Some(TaskbarProgress::None));
-                        }
-                    }
-                    Err(err) => {
-                        let msg = err.to_string();
-                        let was_cancelled = msg.contains("cancelled");
-                        let active_hk = *shared_hotkey.lock().unwrap();
-                        if restore_on_cancel {
-                            let active_path = state.lock().unwrap().active_model_path.clone();
-                            if active_path.is_some() && hotkey.enable(active_hk).is_ok() {
-                                registered_hotkey = active_hk;
-                                {
-                                    let mut s = state.lock().unwrap();
-                                    s.phase = AppPhase::On {
-                                        backend_desc: "GPU".to_string(),
-                                    };
-                                    if was_cancelled {
-                                        s.notice = "Download cancelled".to_string();
-                                    } else {
-                                        s.error = Some(msg);
-                                    }
-                                }
-                                sync_shell(true, false, Some(TaskbarProgress::None));
-                                continue;
-                            }
-                        }
-                        {
-                            let mut s = state.lock().unwrap();
-                            s.phase = AppPhase::Off;
-                            if was_cancelled {
-                                s.notice = "Download paused · VRAM free".to_string();
-                            } else {
-                                s.error = Some(msg);
-                                s.notice = "VRAM free".to_string();
-                            }
-                        }
-                        sync_shell(false, false, Some(TaskbarProgress::None));
-                    }
-                }
-            }
-            CtrlCmd::LoadFinished { dest, res } => {
-                if state.lock().unwrap().force_quit {
-                    llm.unload();
-                    continue;
-                }
-                let active_hk = *shared_hotkey.lock().unwrap();
-                match res {
-                    Ok(info) => match hotkey.enable(active_hk) {
-                        Ok(()) => {
-                            registered_hotkey = active_hk;
-                            if let Some(sh) = shell.as_ref() {
-                                sh.set_hotkey_label(active_hk.display_label());
-                            }
-                            {
-                                let mut s = state.lock().unwrap();
-                                s.phase = AppPhase::On {
-                                    backend_desc: info.backend_desc.clone(),
-                                };
-                                s.active_model_path = Some(dest);
-                                s.error = None;
-                                s.notice = format!(
-                                    "{} · Ready ({})",
-                                    info.backend_desc,
-                                    active_hk.display_label()
-                                );
-                            }
-                            sync_shell(true, false, Some(TaskbarProgress::None));
-                            if shared_show_notifications.load(Ordering::Relaxed) {
-                                if let Some(sh) = shell.as_ref() {
-                                    let hl = shared_highlighted_only.load(Ordering::Relaxed);
-                                    let mode = if hl {
-                                        "Highlighted text only"
-                                    } else {
-                                        "Select all & fix"
-                                    };
-                                    sh.notify(
-                                        "LLM Grammarly — On",
-                                        format!("Ready ({}) · {mode}", active_hk.display_label()),
-                                        true,
-                                    );
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            llm.unload();
-                            {
-                                let mut s = state.lock().unwrap();
-                                s.phase = AppPhase::Off;
-                                s.active_model_path = None;
-                                s.error = Some(e.to_string());
-                                s.notice = "VRAM free".to_string();
-                            }
-                            sync_shell(false, false, Some(TaskbarProgress::None));
-                        }
-                    },
-                    Err(e) => {
-                        {
-                            let mut s = state.lock().unwrap();
-                            s.phase = AppPhase::Off;
-                            s.active_model_path = None;
-                            s.error = Some(e.to_string());
-                            s.notice = "VRAM free".to_string();
-                        }
-                        sync_shell(false, false, Some(TaskbarProgress::None));
-                    }
-                }
-            }
-            CtrlCmd::Hotkey(evt) => match evt {
-                HotkeyEvent::FixingStarted => {
-                    {
-                        let mut s = state.lock().unwrap();
-                        if let AppPhase::On { backend_desc } = &s.phase {
-                            s.phase = AppPhase::Fixing {
-                                backend_desc: backend_desc.clone(),
-                            };
-                        }
-                        s.notice = "Fixing text...".to_string();
-                    }
-                    sync_shell(true, true, Some(TaskbarProgress::Indeterminate));
-                }
-                HotkeyEvent::FixSucceeded {
-                    elapsed_ms,
-                    changed,
-                } => {
-                    {
-                        let mut s = state.lock().unwrap();
-                        let backend_desc = match &s.phase {
-                            AppPhase::Fixing { backend_desc } | AppPhase::On { backend_desc } => {
-                                backend_desc.clone()
-                            }
-                            _ => "GPU".to_string(),
-                        };
-                        if s.phase.is_on() {
-                            s.phase = AppPhase::On {
-                                backend_desc: backend_desc.clone(),
-                            };
-                        }
-                        let secs = (elapsed_ms as f64) / 1000.0;
-                        s.notice = if changed {
-                            format!("{backend_desc} · Fixed in {secs:.2}s")
-                        } else {
-                            format!("{backend_desc} · No changes needed ({secs:.2}s)")
-                        };
-                    }
-                    sync_shell(true, false, Some(TaskbarProgress::None));
-                }
-                HotkeyEvent::FixNotice(msg) => {
-                    {
-                        let mut s = state.lock().unwrap();
-                        if let AppPhase::Fixing { backend_desc } = &s.phase {
-                            s.phase = AppPhase::On {
-                                backend_desc: backend_desc.clone(),
-                            };
-                        }
-                        s.notice = msg;
-                    }
-                    sync_shell(true, false, Some(TaskbarProgress::None));
-                }
-                HotkeyEvent::FixError(err) => {
-                    {
-                        let mut s = state.lock().unwrap();
-                        if let AppPhase::Fixing { backend_desc } = &s.phase {
-                            s.phase = AppPhase::On {
-                                backend_desc: backend_desc.clone(),
-                            };
-                        }
-                        s.error = Some(err);
-                    }
-                    sync_shell(true, false, Some(TaskbarProgress::None));
-                }
-                HotkeyEvent::TogglePowerRequested => {
-                    let _ = tx.send(CtrlCmd::ToggleOnOff);
-                }
-                HotkeyEvent::ToggleHighlightRequested => {
-                    let next = !shared_highlighted_only.load(Ordering::Relaxed);
-                    shared_highlighted_only.store(next, Ordering::Relaxed);
-                    let is_on = {
-                        let mut s = state.lock().unwrap();
-                        s.highlight_sync = Some(next);
-                        let mode_msg = if next {
-                            "Highlight-only mode on"
-                        } else {
-                            "Highlight-only mode off"
-                        };
-                        s.notice = match &s.phase {
-                            AppPhase::On { backend_desc } | AppPhase::Fixing { backend_desc } => {
-                                format!("{backend_desc} · {mode_msg}")
-                            }
-                            AppPhase::Off => format!("{mode_msg} · VRAM free"),
-                            _ => mode_msg.to_string(),
-                        };
-                        s.phase.is_on()
-                    };
-                    if shared_show_notifications.load(Ordering::Relaxed) {
-                        if let Some(sh) = shell.as_ref() {
-                            notify_highlight_mode(sh, next, is_on);
-                        }
-                    }
-                    ctx.request_repaint();
-                }
-            },
-            CtrlCmd::ShowWindow => {
-                if let Some(sh) = shell.as_ref() {
-                    sh.show_window();
-                }
-            }
-            CtrlCmd::Quit => {
-                {
-                    let mut s = state.lock().unwrap();
-                    s.force_quit = true;
-                    if let Some(c) = s.download_cancel.as_ref() {
-                        c.store(true, Ordering::Relaxed);
-                    }
-                }
-                hotkey.disable();
-                llm.unload();
-                if let Some(sh) = shell.as_ref() {
-                    sh.set_progress(TaskbarProgress::None);
-                    sh.request_close_window();
-                }
-                break;
-            }
-            CtrlCmd::ShutdownController => {
-                {
-                    let mut s = state.lock().unwrap();
-                    s.force_quit = true;
-                    if let Some(c) = s.download_cancel.as_ref() {
-                        c.store(true, Ordering::Relaxed);
-                    }
-                }
-                hotkey.disable();
-                llm.unload();
-                break;
-            }
-        }
-    }
-
-    hotkey.shutdown();
-    if let Some(llm_mut) = Arc::get_mut(&mut llm) {
-        llm_mut.shutdown();
     }
 }

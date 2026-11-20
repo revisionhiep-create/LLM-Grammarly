@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use windows::core::PCWSTR;
@@ -110,6 +111,7 @@ struct ThumbState {
     hwnd: HWND,
     msg_taskbar_created: u32,
     msg_shell_taskbar_created: u32,
+    com_initialized: bool,
     tbl: Option<ITaskbarList3>,
     himl: HIMAGELIST,
     buttons_added: bool,
@@ -122,7 +124,7 @@ struct ThumbState {
     is_busy: bool,
     hotkey_label: Arc<Mutex<String>>,
     progress: Arc<Mutex<TaskbarProgress>>,
-    pending_notification: Arc<Mutex<Option<TrayNotification>>>,
+    pending_notification: Arc<Mutex<VecDeque<TrayNotification>>>,
     on_cmd: Arc<dyn Fn(ShellCommand) + Send + Sync>,
 }
 
@@ -147,6 +149,11 @@ impl Drop for ThumbState {
             if !self.himl.is_invalid() {
                 let _ = ImageList_Destroy(self.himl);
                 self.himl = HIMAGELIST::default();
+            }
+            self.tbl = None;
+            if self.com_initialized {
+                CoUninitialize();
+                self.com_initialized = false;
             }
         }
     }
@@ -384,7 +391,10 @@ unsafe fn show_tray_context_menu(
 }
 
 unsafe fn ensure_thumbbar(hwnd: HWND, state: &mut ThumbState, force_readd: bool) {
-    let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    if !state.com_initialized {
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        state.com_initialized = hr.is_ok();
+    }
 
     if state.himl.is_invalid() {
         let himl = ImageList_Create(24, 24, ILC_COLOR32 | ILC_MASK, 3, 0);
@@ -522,14 +532,16 @@ unsafe extern "system" fn subclass_proc(
         ensure_tray_icon(hwnd, state, false);
         return LRESULT(0);
     } else if u_msg == WM_APP_NOTIFY {
-        let notif = state.pending_notification.lock().unwrap().take();
+        let notif = state.pending_notification.lock().unwrap().pop_front();
         if let Some(n) = notif {
             show_tray_notification(hwnd, state, &n);
         }
         return LRESULT(0);
     } else if u_msg == WM_APP_SHOW_WINDOW {
         let _ = ShowWindow(hwnd, SW_SHOW);
-        let _ = ShowWindow(hwnd, SW_RESTORE);
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
         let _ = SetForegroundWindow(hwnd);
         return LRESULT(0);
     } else if u_msg == WM_APP_HIDE_WINDOW {
@@ -548,7 +560,7 @@ pub struct ShellBridge {
     hwnd_raw: isize,
     hotkey_label: Arc<Mutex<String>>,
     progress: Arc<Mutex<TaskbarProgress>>,
-    pending_notification: Arc<Mutex<Option<TrayNotification>>>,
+    pending_notification: Arc<Mutex<VecDeque<TrayNotification>>>,
 }
 
 impl ShellBridge {
@@ -559,7 +571,7 @@ impl ShellBridge {
     ) -> Result<Self> {
         let hotkey_label = Arc::new(Mutex::new(initial_hotkey_label));
         let progress = Arc::new(Mutex::new(TaskbarProgress::None));
-        let pending_notification = Arc::new(Mutex::new(None));
+        let pending_notification = Arc::new(Mutex::new(VecDeque::new()));
         let hwnd = HWND(hwnd_raw as *mut _);
 
         unsafe {
@@ -576,6 +588,7 @@ impl ShellBridge {
                 hwnd,
                 msg_taskbar_created,
                 msg_shell_taskbar_created,
+                com_initialized: false,
                 tbl: None,
                 himl: HIMAGELIST::default(),
                 buttons_added: false,
@@ -648,11 +661,17 @@ impl ShellBridge {
         if self.hwnd_raw == 0 {
             return;
         }
-        *self.pending_notification.lock().unwrap() = Some(TrayNotification {
-            title: title.into(),
-            body: body.into(),
-            active_icon,
-        });
+        {
+            let mut queue = self.pending_notification.lock().unwrap();
+            if queue.len() >= 4 {
+                queue.pop_front();
+            }
+            queue.push_back(TrayNotification {
+                title: title.into(),
+                body: body.into(),
+                active_icon,
+            });
+        }
         let hwnd = HWND(self.hwnd_raw as *mut _);
         unsafe {
             let _ = PostMessageW(hwnd, WM_APP_NOTIFY, WPARAM(0), LPARAM(0));
