@@ -18,8 +18,8 @@ Press a system-wide hotkey in any Windows text field to fix typos, spelling, gra
 
 No installation, Python, or external dependencies required — just download and run:
 
-- **Latest Release Page**: [GitHub Releases](https://github.com/revisionhiep-create/LLM-Grammarly/releases/latest)
-- **Direct Download**: [`LLM-Grammarly.exe`](https://github.com/revisionhiep-create/LLM-Grammarly/releases/latest/download/LLM-Grammarly.exe) (Windows 10/11 64-bit; Vulkan GPU recommended, automatic CPU fallback built in)
+- **Direct Download (Latest)**: [`LLM-Grammarly.exe`](https://github.com/revisionhiep-create/LLM-Grammarly/raw/main/LLM-Grammarly.exe) (Windows 10/11 64-bit; Vulkan GPU recommended, automatic CPU fallback built in)
+- **Release Archive**: [GitHub Releases](https://github.com/revisionhiep-create/LLM-Grammarly/releases)
 
 ### Launching via File Explorer
 
@@ -141,7 +141,7 @@ LLM-Grammarly/
     └── icon_render.rs    # Pure-Rust anti-aliased procedural icon renderer shared with build.rs
 ```
 
-> **Note**: Large model files (`*.gguf`, `*.gguf.part`) are excluded from git history via `.gitignore`, while the prebuilt `LLM-Grammarly.exe` is tracked in the repository (and also published on [GitHub Releases](https://github.com/revisionhiep-create/LLM-Grammarly/releases/latest)).
+> **Note**: Large model files (`*.gguf`, `*.gguf.part`) are excluded from git history via `.gitignore`, while the prebuilt [`LLM-Grammarly.exe`](https://github.com/revisionhiep-create/LLM-Grammarly/raw/main/LLM-Grammarly.exe) is tracked directly on `main` (with older archived builds on [GitHub Releases](https://github.com/revisionhiep-create/LLM-Grammarly/releases)).
 
 ---
 
