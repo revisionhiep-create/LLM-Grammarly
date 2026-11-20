@@ -8,9 +8,9 @@ Press a system-wide hotkey in any Windows text field to fix typos, spelling, gra
 
 ## Demo Video
 
-[![Watch the LLM-Grammarly Demo on YouTube](https://img.youtube.com/vi/Oq4OxtV_xik/maxresdefault.jpg)](https://www.youtube.com/watch?v=Oq4OxtV_xik)
+[![Watch the LLM-Grammarly Demo on YouTube](assets/demo-thumbnail.jpg)](https://www.youtube.com/watch?v=uK4h-7c-8w0)
 
-▶ **[Watch the 1-minute demo on YouTube](https://www.youtube.com/watch?v=Oq4OxtV_xik)** — GitHub download & unblock, one-click Qwen 3.5 model setup, Vulkan GPU acceleration, Highlight Mode, and live Discord demo.
+▶ **[Watch the demo on YouTube](https://www.youtube.com/watch?v=uK4h-7c-8w0)** — GitHub download & unblock, GPU/CPU presets & compute modes, one-click Hugging Face download, Notepad++ Highlight Mode, and live Discord `@mention` demo.
 
 ---
 
@@ -126,6 +126,7 @@ LLM-Grammarly/
 ├── LICENSE               # MIT License
 ├── README.md
 ├── assets/
+│   ├── demo-thumbnail.jpg # YouTube demo thumbnail preview
 │   └── icon.ico          # Multi-resolution neutral keyboard icon (16..256 px)
 └── src/
     ├── main.rs           # Single-instance mutex, --self-test runner, eframe entrypoint
