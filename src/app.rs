@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 
 use crate::config::{
     default_model_dir, display_model_name, effective_model_dir, load_config, local_model_path,
-    normalize_model_url, save_config, AppConfig, HotkeyBinding, WindowState, DEFAULT_MODEL_URL,
+    normalize_model_url, preset_for_url, save_config, AppConfig, HotkeyBinding, WindowState,
+    MODEL_PRESETS,
 };
 use crate::downloader::{download_model, DownloadProgress};
 use crate::hotkey::{HotkeyController, HotkeyEvent};
@@ -591,6 +592,13 @@ impl KeyboardLlmApp {
         self.save_current_config();
     }
 
+    fn apply_model_url(&mut self, url: &str) {
+        self.url_input = url.to_string();
+        self.config.model_url = self.url_input.clone();
+        *self.shared_url.lock().unwrap() = self.url_input.clone();
+        self.save_current_config();
+    }
+
     fn current_storage_dir(&self) -> PathBuf {
         let trimmed = self.dir_input.trim();
         if trimmed.is_empty() {
@@ -947,12 +955,21 @@ impl eframe::App for KeyboardLlmApp {
                                                 .strong()
                                                 .color(theme.text_primary),
                                         );
-                                        ui.label(
-                                            egui::RichText::new(
-                                                "Click below to download the default uncensored Qwen3.5-4B model (~2.5 GB) from Hugging Face to your storage folder.",
+                                        let desc = if let Some(preset) =
+                                            preset_for_url(normalized_preview.as_deref())
+                                        {
+                                            format!(
+                                                "Click below to download the {} model ({}) from Hugging Face to your storage folder.",
+                                                preset.label, preset.summary
                                             )
-                                            .size(11.5)
-                                            .color(theme.text_muted),
+                                        } else {
+                                            "Click below to download the selected GGUF model from Hugging Face to your storage folder."
+                                                .to_string()
+                                        };
+                                        ui.label(
+                                            egui::RichText::new(desc)
+                                                .size(11.5)
+                                                .color(theme.text_muted),
                                         );
                                     });
                             }
@@ -1344,6 +1361,8 @@ impl eframe::App for KeyboardLlmApp {
                     }
 
                     ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+
                         let dl_label = if is_different_from_active {
                             if cached_size.is_some() {
                                 "Switch Model"
@@ -1373,7 +1392,7 @@ impl eframe::App for KeyboardLlmApp {
                                 .fill(theme.btn_sec_bg)
                                 .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
                                 .corner_radius(egui::CornerRadius::same(6))
-                                .min_size(egui::vec2(130.0, 27.0)),
+                                .min_size(egui::vec2(126.0, 27.0)),
                             )
                             .clicked()
                         {
@@ -1390,25 +1409,40 @@ impl eframe::App for KeyboardLlmApp {
                                 .send(CtrlCmd::DownloadModel(self.url_input.clone(), dir));
                         }
 
-                        if ui
-                            .add_enabled(
-                                !is_downloading && self.url_input.trim() != DEFAULT_MODEL_URL,
-                                egui::Button::new(
-                                    egui::RichText::new("Reset Default")
-                                        .size(12.0)
-                                        .color(theme.text_muted),
+                        for preset in MODEL_PRESETS {
+                            let is_selected = normalized_preview.as_deref() == Some(preset.url);
+                            let label = if is_selected {
+                                egui::RichText::new(preset.label)
+                                    .size(12.0)
+                                    .strong()
+                                    .color(theme.text_primary)
+                            } else {
+                                egui::RichText::new(preset.label)
+                                    .size(12.0)
+                                    .color(theme.text_muted)
+                            };
+                            let (fill, stroke_color) = if is_selected {
+                                (theme.btn_sec_bg, theme.text_muted)
+                            } else {
+                                (egui::Color32::TRANSPARENT, theme.border_subtle)
+                            };
+
+                            if ui
+                                .add_enabled(
+                                    !is_downloading,
+                                    egui::Button::new(label)
+                                        .fill(fill)
+                                        .stroke(egui::Stroke::new(1.0_f32, stroke_color))
+                                        .corner_radius(egui::CornerRadius::same(6))
+                                        .min_size(egui::vec2(preset.min_width, 27.0)),
                                 )
-                                .fill(egui::Color32::TRANSPARENT)
-                                .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
-                                .corner_radius(egui::CornerRadius::same(6))
-                                .min_size(egui::vec2(96.0, 27.0)),
-                            )
-                            .clicked()
-                        {
-                            self.url_input = DEFAULT_MODEL_URL.to_string();
-                            self.config.model_url = self.url_input.clone();
-                            *self.shared_url.lock().unwrap() = self.url_input.clone();
-                            self.save_current_config();
+                                .on_hover_text(preset.tooltip)
+                                .clicked()
+                                && self.url_input.trim() != preset.url
+                            {
+                                self.apply_model_url(preset.url);
+                                ctx.request_repaint();
+                            }
                         }
                     });
 

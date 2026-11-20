@@ -4,6 +4,46 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_MODEL_URL: &str = "https://huggingface.co/HauhauCS/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive/resolve/main/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf";
+pub const CPU_STRONG_MODEL_URL: &str = "https://huggingface.co/HauhauCS/Qwen3.5-2B-Uncensored-HauhauCS-Aggressive/resolve/main/Qwen3.5-2B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf";
+pub const CPU_WEAK_MODEL_URL: &str = "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-Q4_K_M.gguf";
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModelPreset {
+    pub label: &'static str,
+    pub summary: &'static str,
+    pub tooltip: &'static str,
+    pub min_width: f32,
+    pub url: &'static str,
+}
+
+pub const MODEL_PRESETS: [ModelPreset; 3] = [
+    ModelPreset {
+        label: "GPU",
+        summary: "Qwen3.5-4B uncensored, ~2.5 GB",
+        tooltip: "Qwen3.5-4B Uncensored Q4_K_M (~2.52 GB) — Default model, recommended for GPUs",
+        min_width: 56.0,
+        url: DEFAULT_MODEL_URL,
+    },
+    ModelPreset {
+        label: "CPU Strong",
+        summary: "Qwen3.5-2B uncensored, ~1.2 GB",
+        tooltip: "Qwen3.5-2B Uncensored Q4_K_M (~1.21 GB) — Fast 2B uncensored model for modern CPUs / Intel iGPUs",
+        min_width: 88.0,
+        url: CPU_STRONG_MODEL_URL,
+    },
+    ModelPreset {
+        label: "CPU Weak",
+        summary: "LFM2.5-1.2B-Instruct, ~697 MB",
+        tooltip: "LiquidAI LFM2.5-1.2B-Instruct Q4_K_M (~697 MB) — Lightweight hybrid model for older or low-RAM CPUs",
+        min_width: 82.0,
+        url: CPU_WEAK_MODEL_URL,
+    },
+];
+
+pub fn preset_for_url(normalized_url: Option<&str>) -> Option<&'static ModelPreset> {
+    let url = normalized_url?;
+    MODEL_PRESETS.iter().find(|p| p.url == url)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HotkeyBinding {
@@ -420,5 +460,26 @@ mod tests {
             let decoded: AppConfig = serde_json::from_str(&encoded).unwrap();
             assert_eq!(decoded.show_notifications, enabled);
         }
+    }
+
+    #[test]
+    fn model_presets_are_valid_and_distinct() {
+        let mut filenames = std::collections::HashSet::new();
+        for preset in MODEL_PRESETS {
+            let norm = normalize_model_url(preset.url).unwrap();
+            assert_eq!(norm, preset.url);
+            assert!(filenames.insert(display_model_name(&norm)));
+            assert_eq!(preset_for_url(Some(&norm)), Some(&preset));
+
+            let blob_url = preset.url.replace("/resolve/main/", "/blob/main/");
+            let norm_blob = normalize_model_url(&blob_url).unwrap();
+            assert_eq!(preset_for_url(Some(&norm_blob)), Some(&preset));
+        }
+        assert_eq!(filenames.len(), MODEL_PRESETS.len());
+        assert_eq!(
+            preset_for_url(Some("https://huggingface.co/some/other/resolve/main/model.gguf")),
+            None
+        );
+        assert_eq!(preset_for_url(None), None);
     }
 }

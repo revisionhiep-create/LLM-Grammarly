@@ -57,7 +57,7 @@ No installation, Python, or external dependencies required — just download and
   - First-run and model-switching download panel showing progress percentage, transferred bytes, download speed (MB/s), and ETA.
   - Supports **Pause / Cancel Download** and **Resume** via `.gguf.part` partial files and HTTP `Range` requests, validates the `GGUF` magic header (`b"GGUF"`), automatically converts Hugging Face `/blob/` links to `/resolve/` URLs, and mirrors progress onto the Windows Taskbar button.
 - **Configurable Model URL & Storage Folder**:
-  - Edit the Hugging Face GGUF download link directly (**Reset Default** available) and choose any **Model Storage Folder** via a native Windows folder picker (**Browse...** / **Reset**). Defaults to the folder containing the running `.exe`.
+  - Edit the Hugging Face GGUF download link directly or pick one of the preset buttons (**GPU** for 4B uncensored ~2.52 GB, **CPU Strong** for 2B uncensored ~1.21 GB, or **CPU Weak** for LFM2.5-1.2B ~697 MB), and choose any **Model Storage Folder** via a native Windows folder picker (**Browse...** / **Reset**). Defaults to the folder containing the running `.exe`.
 - **Native Windows Desktop Integration**:
   - Procedurally rendered neutral keyboard icon embedded into PE executable resources (`assets/icon.ico`), window chrome, system tray, and taskbar.
   - **Windows Taskbar Hover Toolbar** (`ITaskbarList3`) with **Turn On / Turn Off** and **Quit** thumbnail buttons.
@@ -79,7 +79,7 @@ No installation, Python, or external dependencies required — just download and
    - You can click **Pause / Cancel Download** mid-download (keeping the `.gguf.part` file to resume later via **Resume Download** / **Resume Download & Turn On**) or click **Discard partial file**.
 4. **Customize Hotkeys, Model, or Storage Folder**:
    - **Hotkeys**: Click **Change Hotkey** on the fix row (or **Reset** to restore `Ctrl + Q`), and optionally click **Set Hotkey** / **Clear** on the **On / Off** and **Highlight mode** rows (`No hotkey set` by default).
-   - **Model URL**: Paste any Hugging Face `.gguf` URL (`/blob/` or `/resolve/`), then click **Download Model** (or **Reset Default** to return to the default model).
+   - **Model URL**: Paste any Hugging Face `.gguf` URL (`/blob/` or `/resolve/`), or click **GPU** (4B uncensored, ~2.52 GB), **CPU Strong** (2B uncensored, ~1.21 GB), or **CPU Weak** (LFM2.5-1.2B, ~697 MB) to switch presets, then click **Download Model**.
    - **Model Folder**: Click **Browse...** to choose another storage folder or **Reset** to use the `.exe` folder again.
    - **Tray Behavior**: Enable **Minimize to tray on close** or click **Hide to Tray** to keep the app running quietly in the background.
    - **Notifications**: Toggle the **Notifications** checkbox in the footer to enable or disable silent Windows notifications on **On / Off** and **Highlight mode** changes (enabled by default).
@@ -115,7 +115,7 @@ To test against a custom model directory:
 
 ```text
 LLM-Grammarly/
-├── .gitignore            # Excludes target/, *.gguf, *.gguf.part, *.exe, *.pdb, logs
+├── .gitignore            # Excludes target/, *.gguf, *.gguf.part, other *.exe, *.pdb, logs (tracks LLM-Grammarly.exe)
 ├── Cargo.toml            # Crate manifest, dependencies, winresource metadata, release profile
 ├── Cargo.lock            # Locked Rust dependency graph
 ├── build.rs              # Generates assets/icon.ico & embeds Windows PE icon resource
@@ -135,7 +135,7 @@ LLM-Grammarly/
     └── icon_render.rs    # Pure-Rust anti-aliased procedural icon renderer shared with build.rs
 ```
 
-> **Note**: Large binaries (`*.gguf`, `*.exe`) are intentionally excluded from git history via `.gitignore`. Prebuilt `.exe` binaries are published on [GitHub Releases](https://github.com/revisionhiep-create/LLM-Grammarly/releases/latest).
+> **Note**: Large model files (`*.gguf`, `*.gguf.part`) are excluded from git history via `.gitignore`, while the prebuilt `LLM-Grammarly.exe` is tracked in the repository (and also published on [GitHub Releases](https://github.com/revisionhiep-create/LLM-Grammarly/releases/latest)).
 
 ---
 

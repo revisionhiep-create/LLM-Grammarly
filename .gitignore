@@ -6,8 +6,9 @@
 *.gguf
 *.gguf.part
 
-# Compiled Windows binaries & debug symbols (publish via GitHub Releases instead)
+# Compiled Windows binaries & debug symbols (track release LLM-Grammarly.exe)
 *.exe
+!/LLM-Grammarly.exe
 *.pdb
 
 # Logs & OS metadata
