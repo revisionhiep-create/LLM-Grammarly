@@ -30,7 +30,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     HMENU, MF_ENABLED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSGFLT_ALLOW, SWP_NOACTIVATE,
     SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_RESTORE, SW_SHOW, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
     TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_COMMAND, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
-    WM_NCDESTROY, WM_NULL, WM_RBUTTONUP, WM_USER,
+    WM_NCDESTROY, WM_NULL, WM_PAINT, WM_RBUTTONUP, WM_USER,
 };
 
 use crate::icon;
@@ -505,6 +505,20 @@ unsafe extern "system" fn subclass_proc(
         return DefSubclassProc(hwnd, u_msg, w_param, l_param);
     }
 
+    if u_msg == WM_APP_CLOSE_WINDOW {
+        let _ = DefSubclassProc(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+        let _ = DefSubclassProc(hwnd, WM_PAINT, WPARAM(0), LPARAM(0));
+        return LRESULT(0);
+    }
+
+    if u_msg == WM_CLOSE {
+        let res = DefSubclassProc(hwnd, u_msg, w_param, l_param);
+        if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+            let _ = DefSubclassProc(hwnd, WM_PAINT, WPARAM(0), LPARAM(0));
+        }
+        return res;
+    }
+
     if u_msg == WM_NCDESTROY {
         let _ = RemoveWindowSubclass(hwnd, Some(subclass_proc), u_id_subclass);
         let boxed = Box::from_raw(dw_ref_data as *mut ThumbState);
@@ -546,9 +560,6 @@ unsafe extern "system" fn subclass_proc(
         return LRESULT(0);
     } else if u_msg == WM_APP_HIDE_WINDOW {
         let _ = ShowWindow(hwnd, SW_HIDE);
-        return LRESULT(0);
-    } else if u_msg == WM_APP_CLOSE_WINDOW {
-        let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
         return LRESULT(0);
     }
 
