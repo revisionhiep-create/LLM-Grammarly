@@ -34,7 +34,7 @@ No installation, Python, or external dependencies required — just download and
    - Click **Download & Turn On** in the app window (or click **Browse...** first if you want to store models in a different folder).
    - Once the download finishes and loads, the top toggle switch slides right and turns **green** (**Ready**).
 6. **Start fixing text anywhere — or review whole documents**:
-   - **Live Fix tab**: Click into any text box (browser, Discord/Slack, Notepad, email, IDE, etc.) and press **`Ctrl + Q`** (default hotkey) to fix spelling, grammar, and punctuation in place.
+   - **Live Fix tab**: Click into any text box (browser, Discord/Slack, Notepad, email, IDE, etc.) and press **`F8`** (default hotkey) to fix spelling, grammar, and punctuation in place.
    - **Review Docs tab**: Switch to **Review Docs** below the header bar and drag-and-drop (or click **Browse File...**) to open a `.txt`, `.md`, or `.docx` file for chunked offline review.
    - *(Optional)* Right-click `LLM-Grammarly.exe` in File Explorer and choose **Pin to Start**, **Show more options → Pin to taskbar**, or **Create shortcut** for quick access later.
 
@@ -45,7 +45,7 @@ No installation, Python, or external dependencies required — just download and
 - **Single Self-Contained Windows Executable**: Compiles into one portable `.exe` (`LLM-Grammarly.exe`) with `llama.cpp` compiled directly in, linking only standard Windows OS / MSVC runtime libraries and `vulkan-1.dll`.
 - **Default Uncensored Local Model**: Ships configured for `HauhauCS/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive` (`Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf`, ~2.52 GB) running in fast non-thinking mode (`<think>\n\n</think>\n\n`), preserving original meaning, tone, names, slang, profanity, and line breaks. Also supports custom GGUF models via embedded chat templates or ChatML fallback.
 - **Customizable System-Wide Hotkeys**:
-  - **Fix Text**: Defaults to **`Ctrl + Q`**; rebind live via **Change Hotkey** / **Reset** to any modifier combo (`Ctrl` / `Alt` / `Shift` + key) or standalone function key (`F1`–`F12`).
+  - **Fix Text**: Defaults to **`F8`**; rebind live via **Change Hotkey** / **Reset** to any modifier combo (`Ctrl` / `Alt` / `Shift` + key) or standalone function key (`F1`–`F12`).
   - **Optional Mode & Power Toggle Hotkeys**: Assign global hotkeys for **On / Off** and **Highlight mode** (`No hotkey set` by default; assignable via **Set Hotkey** / **Change Hotkey**, removable via **Clear**, and saved in `settings.json`).
   - Waits for physical key/modifier release before copying (`Ctrl+A` → `Ctrl+C`, or `Ctrl+C` only in highlight mode), runs local LLM correction, pastes the result with `Ctrl+V` only if changed (or copies it to your clipboard with a notification if you switched windows during inference), polls `GetClipboardSequenceNumber` adaptively, and restores your previous clipboard text afterward.
 - **Full-Box Clickable On / Off & Highlighted-Only Switches**:
@@ -87,11 +87,11 @@ No installation, Python, or external dependencies required — just download and
 1. **Turn On / Turn Off**:
    - Click anywhere inside the top **Turn On / Turn Off** toggle box (or use the system tray icon menu / Windows taskbar hover buttons) to load or unload the model from GPU VRAM / system RAM and enable or disable the global hotkey.
 2. **Fix Text Anywhere**:
-   - Place your cursor in any text input and press your fix hotkey (default **`Ctrl + Q`**) to select and fix all text in place, or turn on **Fix highlighted text only** to skip `Ctrl+A` and correct only highlighted text.
+   - Place your cursor in any text input and press your fix hotkey (default **`F8`**) to select and fix all text in place, or turn on **Fix highlighted text only** to skip `Ctrl+A` and correct only highlighted text.
 3. **Pause, Resume, or Switch Models**:
    - You can click **Pause / Cancel Download** mid-download (keeping the `.gguf.part` file to resume later via **Resume Download** / **Resume Download & Turn On**) or click **Discard partial file**.
 4. **Customize Hotkeys, Model, or Storage Folder**:
-   - **Hotkeys**: Click **Change Hotkey** on the fix row (or **Reset** to restore `Ctrl + Q`), and optionally click **Set Hotkey** / **Clear** on the **On / Off** and **Highlight mode** rows (`No hotkey set` by default).
+   - **Hotkeys**: Click **Change Hotkey** on the fix row (or **Reset** to restore `F8`), and optionally click **Set Hotkey** / **Clear** on the **On / Off** and **Highlight mode** rows (`No hotkey set` by default).
    - **Model URL & Compute**: Paste any Hugging Face `.gguf` URL (`/blob/` or `/resolve/`), or click **GPU** (4B uncensored, ~2.52 GB), **CPU Strong** (2B uncensored, ~1.21 GB), or **CPU Weak** (LFM2.5-1.2B, ~697 MB) to switch presets, then click **Download Model** / **Switch Model**. Use **Compute** (**Auto** / **CPU Only**) to force CPU inference or reload the active model.
    - **Model Folder**: Click **Browse...** to choose another storage folder or **Reset** to use the `.exe` folder again.
    - **Tray Behavior**: Enable **Minimize to tray on close** or click **Hide to Tray** to keep the app running quietly in the background.

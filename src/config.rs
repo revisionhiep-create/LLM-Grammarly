@@ -76,11 +76,11 @@ pub struct HotkeyBinding {
 impl Default for HotkeyBinding {
     fn default() -> Self {
         Self {
-            ctrl: true,
+            ctrl: false,
             alt: false,
             shift: false,
             win: false,
-            vk: 0x51, // 'Q'
+            vk: 0x77, // F8
         }
     }
 }
@@ -424,7 +424,7 @@ mod tests {
     fn hotkey_binding_validation_and_display() {
         let def = HotkeyBinding::default();
         assert!(def.is_valid());
-        assert_eq!(def.display_label(), "Ctrl + Q");
+        assert_eq!(def.display_label(), "F8");
 
         let combo = HotkeyBinding {
             ctrl: true,
@@ -450,10 +450,10 @@ mod tests {
             alt: false,
             shift: false,
             win: false,
-            vk: 0x77, // F8
+            vk: 0x70, // F1
         };
         assert!(bare_fn.is_valid());
-        assert_eq!(bare_fn.display_label(), "F8");
+        assert_eq!(bare_fn.display_label(), "F1");
     }
 
     #[test]
