@@ -396,12 +396,80 @@ fn build_prompt_config(model: &LlamaModel, path: &Path) -> Result<PromptConfig> 
         template,
         overhead_tokens: 0,
     };
-    let (empty_prompt, add_bos) = build_prompt(model, &cfg, "")?;
-    cfg.overhead_tokens = model
-        .vocab()
-        .tokenize(empty_prompt.as_bytes(), add_bos, true)
-        .len();
+    cfg.overhead_tokens = tokenize_prompt(model, &cfg, "")?.len();
     Ok(cfg)
+}
+
+fn make_unique_sentinel(user_text: &str) -> String {
+    let mut counter = 0usize;
+    loop {
+        let candidate = format!("__KBLLM_USER_TEXT_SENTINEL_{counter}__");
+        if !user_text.contains(&candidate) {
+            return candidate;
+        }
+        counter += 1;
+    }
+}
+
+fn tokenize_prompt(
+    model: &LlamaModel,
+    cfg: &PromptConfig,
+    user_text: &str,
+) -> Result<Vec<LlamaToken>> {
+    let vocab = model.vocab();
+    match cfg.style {
+        PromptStyle::QwenNoThink => {
+            let prefix = format!(
+                "<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\n"
+            );
+            let suffix = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n";
+            let mut tokens = vocab.tokenize(prefix.as_bytes(), false, true);
+            if !user_text.is_empty() {
+                tokens.extend(vocab.tokenize(user_text.as_bytes(), false, false));
+            }
+            tokens.extend(vocab.tokenize(suffix.as_bytes(), false, true));
+            Ok(tokens)
+        }
+        PromptStyle::EmbeddedTemplate | PromptStyle::ChatMlFallback => {
+            let tmpl = cfg.template.as_ref().ok_or_else(|| {
+                let kind = match cfg.style {
+                    PromptStyle::ChatMlFallback => "ChatML fallback",
+                    _ => "chat",
+                };
+                anyhow!("Missing cached {kind} template")
+            })?;
+            let sentinel = make_unique_sentinel(user_text);
+            let msgs = vec![
+                LlamaChatMessage::new("system".to_string(), SYSTEM_PROMPT.to_string())?,
+                LlamaChatMessage::new("user".to_string(), sentinel.clone())?,
+            ];
+            let mut rendered = model
+                .apply_chat_template(tmpl, &msgs, true)
+                .context(match cfg.style {
+                    PromptStyle::ChatMlFallback => "Failed to apply ChatML fallback template",
+                    _ => "Failed to apply model chat template",
+                })?;
+            if cfg.style == PromptStyle::EmbeddedTemplate {
+                if rendered.ends_with("<think>\n") {
+                    rendered.push_str("\n</think>\n\n");
+                } else if rendered.ends_with("<think>") {
+                    rendered.push_str("\n\n</think>\n\n");
+                }
+            }
+            let add_bos = should_prepend_bos(&vocab, &rendered);
+            if let Some((prefix, suffix)) = rendered.split_once(&sentinel) {
+                let mut tokens = vocab.tokenize(prefix.as_bytes(), add_bos, true);
+                if !user_text.is_empty() {
+                    tokens.extend(vocab.tokenize(user_text.as_bytes(), false, false));
+                }
+                tokens.extend(vocab.tokenize(suffix.as_bytes(), false, true));
+                Ok(tokens)
+            } else {
+                let (prompt, add_bos) = build_prompt(model, cfg, user_text)?;
+                Ok(vocab.tokenize(prompt.as_bytes(), add_bos, true))
+            }
+        }
+    }
 }
 
 fn decode_prompt_tokens(
@@ -432,8 +500,7 @@ fn warmup_context(
 ) -> Result<()> {
     ctx.clear_kv_cache();
     let vocab = model.vocab();
-    let (probe, add_bos) = build_prompt(model, prompt_cfg, "helo wrold")?;
-    let tokens = vocab.tokenize(probe.as_bytes(), add_bos, true);
+    let tokens = tokenize_prompt(model, prompt_cfg, "helo wrold")?;
     if !tokens.is_empty() {
         decode_prompt_tokens(ctx, batch, &tokens)?;
 
@@ -521,8 +588,19 @@ fn split_outer_whitespace(text: &str) -> (&str, &str, &str) {
 }
 
 pub fn clean_output(raw: &str, original_core: &str) -> String {
-    let mut s = if let Some(idx) = raw.rfind("</think>") {
-        &raw[idx + "</think>".len()..]
+    let trimmed_raw = raw.trim_start();
+    let mut s = if trimmed_raw.starts_with("<think>") {
+        if let Some(idx) = trimmed_raw.find("</think>") {
+            &trimmed_raw[idx + "</think>".len()..]
+        } else {
+            raw
+        }
+    } else if !original_core.contains("</think>") {
+        if let Some(idx) = raw.rfind("</think>") {
+            &raw[idx + "</think>".len()..]
+        } else {
+            raw
+        }
     } else {
         raw
     };
@@ -552,7 +630,7 @@ pub fn clean_output(raw: &str, original_core: &str) -> String {
         }
     }
 
-    if !(original_core.starts_with('"') && original_core.ends_with('"')) {
+    if !original_core.starts_with('"') && !original_core.ends_with('"') {
         if out.starts_with('"') && out.ends_with('"') && out.len() >= 2 {
             let inner = &out[1..out.len() - 1];
             if !inner.contains('"') || original_core.contains('"') {
@@ -577,8 +655,7 @@ fn infer_once(
     }
 
     let vocab = model.vocab();
-    let (prompt, add_bos) = build_prompt(model, prompt_cfg, core_lf)?;
-    let prompt_tokens = vocab.tokenize(prompt.as_bytes(), add_bos, true);
+    let prompt_tokens = tokenize_prompt(model, prompt_cfg, core_lf)?;
 
     if prompt_tokens.len() + 64 >= n_ctx {
         bail!("Selected text is too long ({} tokens)", prompt_tokens.len());
@@ -606,7 +683,7 @@ fn infer_once(
             break;
         }
 
-        vocab.token_to_piece_into(token, &mut output_bytes, false, None);
+        vocab.token_to_piece_into(token, &mut output_bytes, true, None);
 
         if ends_with_stop_sequence(&output_bytes) {
             break;
@@ -729,5 +806,33 @@ mod tests {
         assert_eq!(l, "  ");
         assert_eq!(c, "hello world");
         assert_eq!(t, " \n");
+    }
+
+    #[test]
+    fn clean_output_preserves_literal_closing_think_and_missing_closing_quote() {
+        assert_eq!(
+            clean_output("Explain the </think> tag.", "explain </think> tag"),
+            "Explain the </think> tag."
+        );
+        assert_eq!(
+            clean_output(
+                "<think>checking</think>\nExplain the </think> tag.",
+                "explain </think> tag"
+            ),
+            "Explain the </think> tag."
+        );
+        assert_eq!(
+            clean_output("\"Hello,\" he said, \"bye.\"", "\"hello\" he said \"bye"),
+            "\"Hello,\" he said, \"bye.\""
+        );
+    }
+
+    #[test]
+    fn make_unique_sentinel_avoids_user_text_collisions() {
+        let base = make_unique_sentinel("plain text");
+        assert_eq!(base, "__KBLLM_USER_TEXT_SENTINEL_0__");
+        let avoided = make_unique_sentinel("has __KBLLM_USER_TEXT_SENTINEL_0__ inside");
+        assert_eq!(avoided, "__KBLLM_USER_TEXT_SENTINEL_1__");
+        assert!(!avoided.eq(&base));
     }
 }

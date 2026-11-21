@@ -663,63 +663,78 @@ pub fn controller_loop(
             }
             CtrlCmd::Hotkey(evt) => match evt {
                 HotkeyEvent::FixingStarted => {
-                    {
+                    let updated = {
                         let mut s = state.lock().unwrap();
                         if let AppPhase::On { backend_desc } = &s.phase {
                             s.phase = AppPhase::Fixing {
                                 backend_desc: backend_desc.clone(),
                             };
+                            s.notice = "Fixing text...".to_string();
+                            true
+                        } else {
+                            false
                         }
-                        s.notice = "Fixing text...".to_string();
+                    };
+                    if updated {
+                        sync_shell(true, true, Some(TaskbarProgress::Indeterminate));
                     }
-                    sync_shell(true, true, Some(TaskbarProgress::Indeterminate));
                 }
                 HotkeyEvent::FixSucceeded {
                     elapsed_ms,
                     changed,
                 } => {
-                    {
+                    let updated = {
                         let mut s = state.lock().unwrap();
                         let backend_desc = match &s.phase {
                             AppPhase::Fixing { backend_desc } | AppPhase::On { backend_desc } => {
-                                backend_desc.clone()
+                                Some(backend_desc.clone())
                             }
-                            _ => "Model".to_string(),
+                            _ => None,
                         };
-                        if s.phase.is_on() {
+                        if let Some(backend_desc) = backend_desc {
                             s.phase = AppPhase::On {
                                 backend_desc: backend_desc.clone(),
                             };
-                        }
-                        let secs = (elapsed_ms as f64) / 1000.0;
-                        s.notice = if changed {
-                            format!("{backend_desc} · Fixed in {secs:.2}s")
+                            let secs = (elapsed_ms as f64) / 1000.0;
+                            s.notice = if changed {
+                                format!("{backend_desc} · Fixed in {secs:.2}s")
+                            } else {
+                                format!("{backend_desc} · No changes needed ({secs:.2}s)")
+                            };
+                            true
                         } else {
-                            format!("{backend_desc} · No changes needed ({secs:.2}s)")
-                        };
+                            false
+                        }
+                    };
+                    if updated {
+                        sync_shell(true, false, Some(TaskbarProgress::None));
                     }
-                    sync_shell(true, false, Some(TaskbarProgress::None));
                 }
                 HotkeyEvent::FixCopiedToClipboard { elapsed_ms } => {
-                    {
+                    let updated = {
                         let mut s = state.lock().unwrap();
                         let backend_desc = match &s.phase {
                             AppPhase::Fixing { backend_desc } | AppPhase::On { backend_desc } => {
-                                backend_desc.clone()
+                                Some(backend_desc.clone())
                             }
-                            _ => "CPU".to_string(),
+                            _ => None,
                         };
-                        if s.phase.is_on() {
+                        if let Some(backend_desc) = backend_desc {
                             s.phase = AppPhase::On {
                                 backend_desc: backend_desc.clone(),
                             };
+                            let secs = (elapsed_ms as f64) / 1000.0;
+                            s.notice = format!(
+                                "{backend_desc} · Copied fix to clipboard ({secs:.2}s — window changed)"
+                            );
+                            true
+                        } else {
+                            false
                         }
-                        let secs = (elapsed_ms as f64) / 1000.0;
-                        s.notice = format!(
-                            "{backend_desc} · Copied fix to clipboard ({secs:.2}s — window changed)"
-                        );
+                    };
+                    if updated {
+                        sync_shell(true, false, Some(TaskbarProgress::None));
                     }
-                    sync_shell(true, false, Some(TaskbarProgress::None));
                     if shared_show_notifications.load(Ordering::Relaxed) {
                         if let Some(sh) = shell.as_ref() {
                             sh.notify(
@@ -731,28 +746,42 @@ pub fn controller_loop(
                     }
                 }
                 HotkeyEvent::FixNotice(msg) => {
-                    {
+                    let updated = {
                         let mut s = state.lock().unwrap();
-                        if let AppPhase::Fixing { backend_desc } = &s.phase {
-                            s.phase = AppPhase::On {
-                                backend_desc: backend_desc.clone(),
-                            };
+                        if s.phase.is_on() {
+                            if let AppPhase::Fixing { backend_desc } = &s.phase {
+                                s.phase = AppPhase::On {
+                                    backend_desc: backend_desc.clone(),
+                                };
+                            }
+                            s.notice = msg;
+                            true
+                        } else {
+                            false
                         }
-                        s.notice = msg;
+                    };
+                    if updated {
+                        sync_shell(true, false, Some(TaskbarProgress::None));
                     }
-                    sync_shell(true, false, Some(TaskbarProgress::None));
                 }
                 HotkeyEvent::FixError(err) => {
-                    {
+                    let updated = {
                         let mut s = state.lock().unwrap();
-                        if let AppPhase::Fixing { backend_desc } = &s.phase {
-                            s.phase = AppPhase::On {
-                                backend_desc: backend_desc.clone(),
-                            };
+                        if s.phase.is_on() {
+                            if let AppPhase::Fixing { backend_desc } = &s.phase {
+                                s.phase = AppPhase::On {
+                                    backend_desc: backend_desc.clone(),
+                                };
+                            }
+                            s.error = Some(err);
+                            true
+                        } else {
+                            false
                         }
-                        s.error = Some(err);
+                    };
+                    if updated {
+                        sync_shell(true, false, Some(TaskbarProgress::None));
                     }
-                    sync_shell(true, false, Some(TaskbarProgress::None));
                 }
                 HotkeyEvent::TogglePowerRequested => {
                     let _ = tx.send(CtrlCmd::ToggleOnOff);

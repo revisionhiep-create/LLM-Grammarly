@@ -1,10 +1,12 @@
 use anyhow::{bail, Context, Result};
 use reqwest::blocking::Client;
-use reqwest::header::{HeaderValue, CONTENT_RANGE, RANGE};
+use reqwest::header::{
+    HeaderMap, HeaderValue, CONTENT_RANGE, ETAG, IF_RANGE, LAST_MODIFIED, RANGE,
+};
 use reqwest::StatusCode;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -16,21 +18,94 @@ pub struct DownloadProgress {
     pub speed_bps: f64,
 }
 
+fn part_meta_path(part_path: &Path) -> PathBuf {
+    let mut os = part_path.as_os_str().to_os_string();
+    os.push(".meta");
+    PathBuf::from(os)
+}
+
+pub fn discard_partial_download(part_path: &Path) {
+    let _ = fs::remove_file(part_path);
+    let _ = fs::remove_file(part_meta_path(part_path));
+}
+
+fn extract_strong_etag(headers: &HeaderMap) -> Option<String> {
+    let val = headers.get(ETAG)?.to_str().ok()?.trim();
+    if val.is_empty() || val.starts_with("W/") || val.starts_with("w/") {
+        return None;
+    }
+    Some(val.to_string())
+}
+
+fn extract_resume_validator(headers: &HeaderMap) -> Option<String> {
+    if let Some(etag) = extract_strong_etag(headers) {
+        return Some(etag);
+    }
+    let lm = headers.get(LAST_MODIFIED)?.to_str().ok()?.trim();
+    if lm.is_empty() {
+        None
+    } else {
+        Some(lm.to_string())
+    }
+}
+
+fn read_resume_validator(part_path: &Path) -> Option<String> {
+    let raw = fs::read_to_string(part_meta_path(part_path)).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn write_resume_validator(part_path: &Path, validator: Option<&str>) {
+    let meta = part_meta_path(part_path);
+    match validator.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(v) => {
+            let _ = fs::write(meta, v.as_bytes());
+        }
+        None => {
+            let _ = fs::remove_file(meta);
+        }
+    }
+}
+
+fn validators_match(saved_validator: Option<&str>, headers: &HeaderMap) -> bool {
+    let Some(saved) = saved_validator else {
+        return true;
+    };
+    if saved.starts_with('"') {
+        if let Some(current_etag) = extract_strong_etag(headers) {
+            return saved == current_etag;
+        }
+    } else if let Some(current_lm) = headers
+        .get(LAST_MODIFIED)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return saved == current_lm;
+    }
+    true
+}
+
 fn verify_part_magic_if_exists(part_path: &Path) -> Result<u64> {
     if !part_path.exists() {
+        let _ = fs::remove_file(part_meta_path(part_path));
         return Ok(0);
     }
     let meta = fs::metadata(part_path)?;
     let len = meta.len();
     if len < 4 {
-        let _ = fs::remove_file(part_path);
+        discard_partial_download(part_path);
         return Ok(0);
     }
     let mut f = File::open(part_path)?;
     let mut magic = [0u8; 4];
     f.read_exact(&mut magic)?;
     if &magic != b"GGUF" {
-        let _ = fs::remove_file(part_path);
+        discard_partial_download(part_path);
         return Ok(0);
     }
     Ok(len)
@@ -74,6 +149,11 @@ pub fn download_model(
 
     let part_path = crate::config::partial_download_path(dest);
     let existing_len = verify_part_magic_if_exists(&part_path)?;
+    let saved_validator = if existing_len > 0 {
+        read_resume_validator(&part_path)
+    } else {
+        None
+    };
 
     let client = Client::builder()
         .user_agent("keyboard-llm/1.0")
@@ -92,6 +172,9 @@ pub fn download_model(
     let mut req = client.get(url);
     if existing_len > 0 {
         req = req.header(RANGE, format!("bytes={existing_len}-"));
+        if let Some(ref validator) = saved_validator {
+            req = req.header(IF_RANGE, validator);
+        }
     }
 
     let mut resp = req
@@ -103,7 +186,7 @@ pub fn download_model(
     }
 
     if existing_len > 0 && resp.status() == StatusCode::RANGE_NOT_SATISFIABLE {
-        let _ = fs::remove_file(&part_path);
+        discard_partial_download(&part_path);
         resp = client
             .get(url)
             .send()
@@ -119,14 +202,16 @@ pub fn download_model(
 
     let mut resume_range_total = None;
     let should_resume = if resp.status() == StatusCode::PARTIAL_CONTENT && existing_len > 0 {
-        match parse_content_range(resp.headers().get(CONTENT_RANGE)) {
-            Some((start, total_opt)) if start == existing_len => {
+        let range_ok = parse_content_range(resp.headers().get(CONTENT_RANGE));
+        let validator_ok = validators_match(saved_validator.as_deref(), resp.headers());
+        match (range_ok, validator_ok) {
+            (Some((start, total_opt)), true) if start == existing_len => {
                 resume_range_total = total_opt;
                 true
             }
             _ => {
                 drop(resp);
-                let _ = fs::remove_file(&part_path);
+                discard_partial_download(&part_path);
                 if cancel.load(Ordering::Relaxed) {
                     bail!("Download cancelled");
                 }
@@ -157,6 +242,8 @@ pub fn download_model(
         f.seek(SeekFrom::End(0))?;
         (f, existing_len, total, true)
     } else {
+        let resp_validator = extract_resume_validator(resp.headers());
+        write_resume_validator(&part_path, resp_validator.as_deref());
         let total = resp.content_length();
         let f = File::create(&part_path)
             .with_context(|| format!("Failed to create {}", part_path.display()))?;
@@ -198,7 +285,7 @@ pub fn download_model(
             if header_fill == 4 {
                 if &header_buf != b"GGUF" {
                     drop(file);
-                    let _ = fs::remove_file(&part_path);
+                    discard_partial_download(&part_path);
                     bail!("URL did not return a valid GGUF model file (check the Hugging Face link)");
                 }
                 checked_magic = true;
@@ -230,7 +317,7 @@ pub fn download_model(
 
     if !checked_magic {
         drop(file);
-        let _ = fs::remove_file(&part_path);
+        discard_partial_download(&part_path);
         bail!("Downloaded file was too small to be a valid GGUF model");
     }
 
@@ -240,7 +327,7 @@ pub fn download_model(
         }
         if downloaded > expected {
             drop(file);
-            let _ = fs::remove_file(&part_path);
+            discard_partial_download(&part_path);
             bail!("Downloaded size mismatch ({downloaded} bytes received, expected {expected})");
         }
     }
@@ -265,6 +352,7 @@ pub fn download_model(
             dest.display()
         )
     })?;
+    let _ = fs::remove_file(part_meta_path(&part_path));
 
     Ok(())
 }
@@ -272,6 +360,39 @@ pub fn download_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extracts_resume_validators_with_strong_etag_priority() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(extract_resume_validator(&headers), None);
+
+        headers.insert(LAST_MODIFIED, HeaderValue::from_static("Wed, 21 Oct 2015 07:28:00 GMT"));
+        assert_eq!(
+            extract_resume_validator(&headers),
+            Some("Wed, 21 Oct 2015 07:28:00 GMT".to_string())
+        );
+
+        headers.insert(ETAG, HeaderValue::from_static("W/\"weak-etag\""));
+        assert_eq!(
+            extract_resume_validator(&headers),
+            Some("Wed, 21 Oct 2015 07:28:00 GMT".to_string())
+        );
+
+        headers.insert(ETAG, HeaderValue::from_static("\"strong-etag\""));
+        assert_eq!(
+            extract_resume_validator(&headers),
+            Some("\"strong-etag\"".to_string())
+        );
+    }
+
+    #[test]
+    fn part_meta_path_appends_meta_suffix() {
+        let part = Path::new("C:\\Models\\model.gguf.part");
+        assert_eq!(
+            part_meta_path(part),
+            PathBuf::from("C:\\Models\\model.gguf.part.meta")
+        );
+    }
 
     #[test]
     fn parses_content_range_headers() {

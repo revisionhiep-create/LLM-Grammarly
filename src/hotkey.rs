@@ -10,7 +10,9 @@ use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber,
     IsClipboardFormatAvailable, OpenClipboard, SetClipboardData,
 };
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Memory::{
+    GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
+};
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -454,6 +456,16 @@ fn open_clipboard_retry() -> Result<ClipboardGuard> {
     bail!("Clipboard is locked by another application")
 }
 
+struct GlobalLockGuard(HGLOBAL);
+
+impl Drop for GlobalLockGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = GlobalUnlock(self.0);
+        }
+    }
+}
+
 fn read_clipboard_text() -> Option<String> {
     let _guard = open_clipboard_retry().ok()?;
     unsafe {
@@ -465,18 +477,22 @@ fn read_clipboard_text() -> Option<String> {
             return None;
         }
         let hglobal = HGLOBAL(handle.0);
+        let byte_size = GlobalSize(hglobal);
+        let max_units = byte_size / size_of::<u16>();
+        if max_units == 0 {
+            return None;
+        }
         let ptr = GlobalLock(hglobal) as *const u16;
         if ptr.is_null() {
             return None;
         }
-        let mut len = 0usize;
-        while *ptr.add(len) != 0 {
-            len += 1;
+        let _unlock = GlobalLockGuard(hglobal);
+        if (ptr as usize) % std::mem::align_of::<u16>() != 0 {
+            return None;
         }
-        let slice = std::slice::from_raw_parts(ptr, len);
-        let text = String::from_utf16_lossy(slice);
-        let _ = GlobalUnlock(hglobal);
-        Some(text)
+        let slice = std::slice::from_raw_parts(ptr, max_units);
+        let len = slice.iter().position(|&c| c == 0).unwrap_or(max_units);
+        Some(String::from_utf16_lossy(&slice[..len]))
     }
 }
 
@@ -594,7 +610,7 @@ fn run_fix_pipeline(
     match llm.fix_text(captured.clone()) {
         Ok((fixed, elapsed_ms)) => {
             let fg_after = unsafe { GetForegroundWindow() };
-            let same_window = fg_before.0.is_null() || fg_before == fg_after;
+            let same_window = !fg_before.0.is_null() && fg_before == fg_after;
 
             if fixed == captured || fixed.trim().is_empty() {
                 if !fix_highlighted_only && same_window {

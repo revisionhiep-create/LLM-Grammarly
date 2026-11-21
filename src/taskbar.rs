@@ -1,7 +1,9 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::rc::Rc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -73,6 +75,10 @@ struct TrayNotification {
     title: String,
     body: String,
     active_icon: bool,
+}
+
+fn lock_unpoisoned<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn fill_utf16<const N: usize>(buf: &mut [u16; N], text: &str) {
@@ -199,26 +205,30 @@ unsafe fn apply_taskbar_progress(hwnd: HWND, tbl: &ITaskbarList3, progress: Task
     }
 }
 
-unsafe fn ensure_tray_icon(hwnd: HWND, state: &mut ThumbState, force_readd: bool) {
-    if state.tray_hicon_off.is_invalid() {
-        if let Ok(h) = icon::tray_hicon(false) {
-            state.tray_hicon_off = h;
+unsafe fn ensure_tray_icon(hwnd: HWND, state_rc: &RefCell<ThumbState>, force_readd: bool) {
+    let (was_added, hicon, tip) = {
+        let mut state = state_rc.borrow_mut();
+        if state.tray_hicon_off.is_invalid() {
+            if let Ok(h) = icon::tray_hicon(false) {
+                state.tray_hicon_off = h;
+            }
         }
-    }
-    if state.tray_hicon_on.is_invalid() {
-        if let Ok(h) = icon::tray_hicon(true) {
-            state.tray_hicon_on = h;
+        if state.tray_hicon_on.is_invalid() {
+            if let Ok(h) = icon::tray_hicon(true) {
+                state.tray_hicon_on = h;
+            }
         }
-    }
 
-    let label = state.hotkey_label.lock().unwrap().clone();
-    let progress = *state.progress.lock().unwrap();
-    let tip = format_tray_tip(state.is_on, state.is_busy, &label, progress);
+        let label = lock_unpoisoned(&state.hotkey_label).clone();
+        let progress = *lock_unpoisoned(&state.progress);
+        let tip = format_tray_tip(state.is_on, state.is_busy, &label, progress);
 
-    let hicon = if state.is_on {
-        state.tray_hicon_on
-    } else {
-        state.tray_hicon_off
+        let hicon = if state.is_on {
+            state.tray_hicon_on
+        } else {
+            state.tray_hicon_off
+        };
+        (state.tray_added, hicon, tip)
     };
 
     let mut nid = NOTIFYICONDATAW {
@@ -235,11 +245,14 @@ unsafe fn ensure_tray_icon(hwnd: HWND, state: &mut ThumbState, force_readd: bool
     }
     fill_utf16(&mut nid.szTip, &tip);
 
-    if !state.tray_added || force_readd {
-        state.tray_added = Shell_NotifyIconW(NIM_ADD, &nid).as_bool();
+    let added = if !was_added || force_readd {
+        Shell_NotifyIconW(NIM_ADD, &nid).as_bool()
     } else if !Shell_NotifyIconW(NIM_MODIFY, &nid).as_bool() {
-        state.tray_added = Shell_NotifyIconW(NIM_ADD, &nid).as_bool();
-    }
+        Shell_NotifyIconW(NIM_ADD, &nid).as_bool()
+    } else {
+        true
+    };
+    state_rc.borrow_mut().tray_added = added;
 }
 
 unsafe fn remove_tray_icon(hwnd: HWND) {
@@ -254,11 +267,12 @@ unsafe fn remove_tray_icon(hwnd: HWND) {
 
 unsafe fn show_tray_notification(
     hwnd: HWND,
-    state: &mut ThumbState,
+    state_rc: &RefCell<ThumbState>,
     notif: &TrayNotification,
 ) {
-    if !state.tray_added {
-        ensure_tray_icon(hwnd, state, false);
+    let already_added = state_rc.borrow().tray_added;
+    if !already_added {
+        ensure_tray_icon(hwnd, state_rc, false);
     }
 
     // Clear any active balloon on this icon so back-to-back toggles display immediately.
@@ -271,20 +285,23 @@ unsafe fn show_tray_notification(
     };
     let _ = Shell_NotifyIconW(NIM_MODIFY, &clear_nid);
 
-    let balloon_hicon = if notif.active_icon {
-        if state.balloon_hicon_on.is_invalid() {
-            if let Ok(h) = icon::notification_hicon(true) {
-                state.balloon_hicon_on = h;
+    let balloon_hicon = {
+        let mut state = state_rc.borrow_mut();
+        if notif.active_icon {
+            if state.balloon_hicon_on.is_invalid() {
+                if let Ok(h) = icon::notification_hicon(true) {
+                    state.balloon_hicon_on = h;
+                }
             }
-        }
-        state.balloon_hicon_on
-    } else {
-        if state.balloon_hicon_off.is_invalid() {
-            if let Ok(h) = icon::notification_hicon(false) {
-                state.balloon_hicon_off = h;
+            state.balloon_hicon_on
+        } else {
+            if state.balloon_hicon_off.is_invalid() {
+                if let Ok(h) = icon::notification_hicon(false) {
+                    state.balloon_hicon_off = h;
+                }
             }
+            state.balloon_hicon_off
         }
-        state.balloon_hicon_off
     };
 
     let mut nid = NOTIFYICONDATAW {
@@ -305,7 +322,7 @@ unsafe fn show_tray_notification(
     }
 
     if !Shell_NotifyIconW(NIM_MODIFY, &nid).as_bool() {
-        ensure_tray_icon(hwnd, state, true);
+        ensure_tray_icon(hwnd, state_rc, true);
         let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
     }
 }
@@ -390,64 +407,87 @@ unsafe fn show_tray_context_menu(
     }
 }
 
-unsafe fn ensure_thumbbar(hwnd: HWND, state: &mut ThumbState, force_readd: bool) {
-    if !state.com_initialized {
-        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        state.com_initialized = hr.is_ok();
-    }
-
-    if state.himl.is_invalid() {
-        let himl = ImageList_Create(24, 24, ILC_COLOR32 | ILC_MASK, 3, 0);
-        if !himl.is_invalid() {
-            if let Ok(h_off) = icon::thumb_power_hicon(false) {
-                let _ = ImageList_ReplaceIcon(himl, -1, h_off);
-                let _ = DestroyIcon(h_off);
-            }
-            if let Ok(h_on) = icon::thumb_power_hicon(true) {
-                let _ = ImageList_ReplaceIcon(himl, -1, h_on);
-                let _ = DestroyIcon(h_on);
-            }
-            if let Ok(h_quit) = icon::thumb_quit_hicon() {
-                let _ = ImageList_ReplaceIcon(himl, -1, h_quit);
-                let _ = DestroyIcon(h_quit);
-            }
-            state.himl = himl;
+unsafe fn ensure_thumbbar(hwnd: HWND, state_rc: &RefCell<ThumbState>, force_readd: bool) {
+    let (need_tbl, existing_tbl, himl, buttons_added) = {
+        let mut state = state_rc.borrow_mut();
+        if !state.com_initialized {
+            let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            state.com_initialized = hr.is_ok();
         }
-    }
 
-    if state.tbl.is_none() || force_readd {
-        if let Ok(tbl) = CoCreateInstance::<_, ITaskbarList3>(&TaskbarList, None, CLSCTX_INPROC_SERVER)
-        {
-            if tbl.HrInit().is_ok() {
-                state.tbl = Some(tbl);
+        if state.himl.is_invalid() {
+            let himl = ImageList_Create(24, 24, ILC_COLOR32 | ILC_MASK, 3, 0);
+            if !himl.is_invalid() {
+                if let Ok(h_off) = icon::thumb_power_hicon(false) {
+                    let _ = ImageList_ReplaceIcon(himl, -1, h_off);
+                    let _ = DestroyIcon(h_off);
+                }
+                if let Ok(h_on) = icon::thumb_power_hicon(true) {
+                    let _ = ImageList_ReplaceIcon(himl, -1, h_on);
+                    let _ = DestroyIcon(h_on);
+                }
+                if let Ok(h_quit) = icon::thumb_quit_hicon() {
+                    let _ = ImageList_ReplaceIcon(himl, -1, h_quit);
+                    let _ = DestroyIcon(h_quit);
+                }
+                state.himl = himl;
+            }
+        }
+
+        (
+            state.tbl.is_none() || force_readd,
+            state.tbl.clone(),
+            state.himl,
+            state.buttons_added,
+        )
+    };
+
+    let (tbl, buttons_added) = if need_tbl {
+        match CoCreateInstance::<_, ITaskbarList3>(&TaskbarList, None, CLSCTX_INPROC_SERVER) {
+            Ok(new_tbl) if new_tbl.HrInit().is_ok() => {
+                let mut state = state_rc.borrow_mut();
+                state.tbl = Some(new_tbl.clone());
                 state.buttons_added = false;
+                (Some(new_tbl), false)
             }
+            _ => (existing_tbl, buttons_added),
         }
-    }
+    } else {
+        (existing_tbl, buttons_added)
+    };
 
-    let Some(tbl) = state.tbl.as_ref() else {
+    let Some(tbl) = tbl else {
         return;
     };
 
-    let buttons = build_thumb_buttons(state.is_on, state.is_busy);
-    if !state.buttons_added {
-        if !state.himl.is_invalid() {
-            let _ = tbl.ThumbBarSetImageList(hwnd, state.himl);
+    let (is_on, is_busy, progress) = {
+        let state = state_rc.borrow();
+        let progress = *lock_unpoisoned(&state.progress);
+        (state.is_on, state.is_busy, progress)
+    };
+
+    let buttons = build_thumb_buttons(is_on, is_busy);
+    let mut next_buttons_added = buttons_added;
+    if !buttons_added {
+        if !himl.is_invalid() {
+            let _ = tbl.ThumbBarSetImageList(hwnd, himl);
         }
         if tbl.ThumbBarAddButtons(hwnd, &buttons).is_ok() {
-            state.buttons_added = true;
+            next_buttons_added = true;
         }
     } else if tbl.ThumbBarUpdateButtons(hwnd, &buttons).is_err() {
-        if !state.himl.is_invalid() {
-            let _ = tbl.ThumbBarSetImageList(hwnd, state.himl);
+        if !himl.is_invalid() {
+            let _ = tbl.ThumbBarSetImageList(hwnd, himl);
         }
         if tbl.ThumbBarAddButtons(hwnd, &buttons).is_ok() {
-            state.buttons_added = true;
+            next_buttons_added = true;
         }
     }
+    if next_buttons_added != buttons_added {
+        state_rc.borrow_mut().buttons_added = next_buttons_added;
+    }
 
-    let progress = *state.progress.lock().unwrap();
-    apply_taskbar_progress(hwnd, tbl, progress);
+    apply_taskbar_progress(hwnd, &tbl, progress);
 }
 
 unsafe extern "system" fn subclass_proc(
@@ -458,24 +498,71 @@ unsafe extern "system" fn subclass_proc(
     u_id_subclass: usize,
     dw_ref_data: usize,
 ) -> LRESULT {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        subclass_proc_inner(hwnd, u_msg, w_param, l_param, u_id_subclass, dw_ref_data)
+    }))
+    .unwrap_or_else(|_| DefSubclassProc(hwnd, u_msg, w_param, l_param))
+}
+
+unsafe fn subclass_proc_inner(
+    hwnd: HWND,
+    u_msg: u32,
+    w_param: WPARAM,
+    l_param: LPARAM,
+    u_id_subclass: usize,
+    dw_ref_data: usize,
+) -> LRESULT {
+    if u_msg == WM_APP_SHOW_WINDOW {
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+        let _ = SetForegroundWindow(hwnd);
+        return LRESULT(0);
+    }
+    if u_msg == WM_APP_HIDE_WINDOW {
+        let _ = ShowWindow(hwnd, SW_HIDE);
+        return LRESULT(0);
+    }
+    if u_msg == WM_APP_CLOSE_WINDOW {
+        let _ = DefSubclassProc(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+        let _ = DefSubclassProc(hwnd, WM_PAINT, WPARAM(0), LPARAM(0));
+        return LRESULT(0);
+    }
+    if u_msg == WM_CLOSE {
+        let res = DefSubclassProc(hwnd, u_msg, w_param, l_param);
+        if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+            let _ = DefSubclassProc(hwnd, WM_PAINT, WPARAM(0), LPARAM(0));
+        }
+        return res;
+    }
+
     if dw_ref_data == 0 {
         return DefSubclassProc(hwnd, u_msg, w_param, l_param);
     }
+
+    if u_msg == WM_NCDESTROY {
+        let _ = RemoveWindowSubclass(hwnd, Some(subclass_proc), u_id_subclass);
+        let owned = Rc::from_raw(dw_ref_data as *const RefCell<ThumbState>);
+        drop(owned);
+        return DefSubclassProc(hwnd, u_msg, w_param, l_param);
+    }
+
+    let ptr = dw_ref_data as *const RefCell<ThumbState>;
+    Rc::increment_strong_count(ptr);
+    let state_rc = Rc::from_raw(ptr);
 
     if u_msg == WM_APP_TRAY_ICON {
         let evt = (l_param.0 as u32) & 0xFFFF;
         match evt {
             WM_LBUTTONUP | WM_LBUTTONDBLCLK | NIN_BALLOONUSERCLICK => {
-                let on_cmd = {
-                    let state = &*(dw_ref_data as *const ThumbState);
-                    Arc::clone(&state.on_cmd)
-                };
+                let on_cmd = Arc::clone(&state_rc.borrow().on_cmd);
                 on_cmd(ShellCommand::ShowWindow);
                 return LRESULT(0);
             }
             WM_RBUTTONUP => {
                 let (is_on, is_busy, on_cmd) = {
-                    let state = &*(dw_ref_data as *const ThumbState);
+                    let state = state_rc.borrow();
                     (state.is_on, state.is_busy, Arc::clone(&state.on_cmd))
                 };
                 show_tray_context_menu(hwnd, is_on, is_busy, &on_cmd);
@@ -490,10 +577,7 @@ unsafe extern "system" fn subclass_proc(
         let hi = (wp >> 16) & 0xFFFF;
         let lo = wp & 0xFFFF;
         if hi == THBN_CLICKED {
-            let on_cmd = {
-                let state = &*(dw_ref_data as *const ThumbState);
-                Arc::clone(&state.on_cmd)
-            };
+            let on_cmd = Arc::clone(&state_rc.borrow().on_cmd);
             if lo == BTN_TOGGLE_ID {
                 on_cmd(ShellCommand::ToggleOnOff);
                 return LRESULT(0);
@@ -505,61 +589,44 @@ unsafe extern "system" fn subclass_proc(
         return DefSubclassProc(hwnd, u_msg, w_param, l_param);
     }
 
-    if u_msg == WM_APP_CLOSE_WINDOW {
-        let _ = DefSubclassProc(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
-        let _ = DefSubclassProc(hwnd, WM_PAINT, WPARAM(0), LPARAM(0));
-        return LRESULT(0);
-    }
+    let (msg_taskbar_created, msg_shell_taskbar_created) = {
+        let state = state_rc.borrow();
+        (state.msg_taskbar_created, state.msg_shell_taskbar_created)
+    };
 
-    if u_msg == WM_CLOSE {
-        let res = DefSubclassProc(hwnd, u_msg, w_param, l_param);
-        if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
-            let _ = DefSubclassProc(hwnd, WM_PAINT, WPARAM(0), LPARAM(0));
-        }
-        return res;
-    }
-
-    if u_msg == WM_NCDESTROY {
-        let _ = RemoveWindowSubclass(hwnd, Some(subclass_proc), u_id_subclass);
-        let boxed = Box::from_raw(dw_ref_data as *mut ThumbState);
-        drop(boxed);
-        return DefSubclassProc(hwnd, u_msg, w_param, l_param);
-    }
-
-    let state = &mut *(dw_ref_data as *mut ThumbState);
-
-    if u_msg == state.msg_taskbar_created {
-        ensure_thumbbar(hwnd, state, true);
-    } else if u_msg == state.msg_shell_taskbar_created {
-        ensure_tray_icon(hwnd, state, true);
+    if u_msg == msg_taskbar_created {
+        ensure_thumbbar(hwnd, &state_rc, true);
+    } else if u_msg == msg_shell_taskbar_created {
+        ensure_tray_icon(hwnd, &state_rc, true);
     } else if u_msg == WM_APP_SYNC_SHELL {
-        state.is_on = w_param.0 != 0;
-        state.is_busy = l_param.0 != 0;
-        ensure_thumbbar(hwnd, state, false);
-        ensure_tray_icon(hwnd, state, false);
+        {
+            let mut state = state_rc.borrow_mut();
+            state.is_on = w_param.0 != 0;
+            state.is_busy = l_param.0 != 0;
+        }
+        ensure_thumbbar(hwnd, &state_rc, false);
+        ensure_tray_icon(hwnd, &state_rc, false);
         return LRESULT(0);
     } else if u_msg == WM_APP_SET_PROGRESS {
-        let progress = *state.progress.lock().unwrap();
-        if let Some(tbl) = state.tbl.as_ref() {
+        let (tbl, progress) = {
+            let state = state_rc.borrow();
+            let progress = *lock_unpoisoned(&state.progress);
+            (state.tbl.clone(), progress)
+        };
+        if let Some(tbl) = tbl.as_ref() {
             apply_taskbar_progress(hwnd, tbl, progress);
         }
-        ensure_tray_icon(hwnd, state, false);
+        ensure_tray_icon(hwnd, &state_rc, false);
         return LRESULT(0);
     } else if u_msg == WM_APP_NOTIFY {
-        let notif = state.pending_notification.lock().unwrap().pop_front();
+        let notif = {
+            let state = state_rc.borrow();
+            let notif = lock_unpoisoned(&state.pending_notification).pop_front();
+            notif
+        };
         if let Some(n) = notif {
-            show_tray_notification(hwnd, state, &n);
+            show_tray_notification(hwnd, &state_rc, &n);
         }
-        return LRESULT(0);
-    } else if u_msg == WM_APP_SHOW_WINDOW {
-        let _ = ShowWindow(hwnd, SW_SHOW);
-        if IsIconic(hwnd).as_bool() {
-            let _ = ShowWindow(hwnd, SW_RESTORE);
-        }
-        let _ = SetForegroundWindow(hwnd);
-        return LRESULT(0);
-    } else if u_msg == WM_APP_HIDE_WINDOW {
-        let _ = ShowWindow(hwnd, SW_HIDE);
         return LRESULT(0);
     }
 
@@ -595,7 +662,7 @@ impl ShellBridge {
                 ChangeWindowMessageFilterEx(hwnd, msg_shell_taskbar_created, MSGFLT_ALLOW, None);
             let _ = ChangeWindowMessageFilterEx(hwnd, WM_COMMAND, MSGFLT_ALLOW, None);
 
-            let state = Box::new(ThumbState {
+            let state = Rc::new(RefCell::new(ThumbState {
                 hwnd,
                 msg_taskbar_created,
                 msg_shell_taskbar_created,
@@ -614,14 +681,14 @@ impl ShellBridge {
                 progress: Arc::clone(&progress),
                 pending_notification: Arc::clone(&pending_notification),
                 on_cmd,
-            });
-            let ptr = Box::into_raw(state);
+            }));
+            let ptr = Rc::into_raw(state);
             let ok = SetWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID, ptr as usize);
             if !ok.as_bool() {
-                drop(Box::from_raw(ptr));
-            } else {
-                let _ = PostMessageW(hwnd, WM_APP_SYNC_SHELL, WPARAM(0), LPARAM(0));
+                drop(Rc::from_raw(ptr));
+                bail!("SetWindowSubclass failed");
             }
+            let _ = PostMessageW(hwnd, WM_APP_SYNC_SHELL, WPARAM(0), LPARAM(0));
         }
 
         Ok(Self {
@@ -633,12 +700,12 @@ impl ShellBridge {
     }
 
     pub fn set_hotkey_label(&self, label: String) {
-        *self.hotkey_label.lock().unwrap() = label;
+        *lock_unpoisoned(&self.hotkey_label) = label;
     }
 
     pub fn set_progress(&self, next: TaskbarProgress) {
         {
-            let mut slot = self.progress.lock().unwrap();
+            let mut slot = lock_unpoisoned(&self.progress);
             if *slot == next {
                 return;
             }
@@ -673,7 +740,7 @@ impl ShellBridge {
             return;
         }
         {
-            let mut queue = self.pending_notification.lock().unwrap();
+            let mut queue = lock_unpoisoned(&self.pending_notification);
             if queue.len() >= 4 {
                 queue.pop_front();
             }

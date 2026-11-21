@@ -1,9 +1,10 @@
 use eframe::egui;
 use std::mem::size_of;
 use std::ptr::null_mut;
+use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::Graphics::Gdi::{
     CreateBitmap, CreateDIBSection, DeleteObject, GetDC, ReleaseDC, BITMAPINFO, BITMAPINFOHEADER,
-    BI_RGB, DIB_RGB_COLORS,
+    BI_RGB, DIB_RGB_COLORS, HDC,
 };
 use windows::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, HICON, ICONINFO};
 
@@ -42,23 +43,54 @@ pub fn thumb_quit_hicon() -> windows::core::Result<HICON> {
     rgba_to_hicon(&rgba, size, size)
 }
 
+struct ScreenDcGuard(HDC);
+
+impl Drop for ScreenDcGuard {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            unsafe {
+                let _ = ReleaseDC(None, self.0);
+            }
+        }
+    }
+}
+
 /// Converts a top-down RGBA8 pixel buffer into a Win32 HICON with per-pixel alpha.
 pub fn rgba_to_hicon(rgba: &[u8], w: u32, h: u32) -> windows::core::Result<HICON> {
-    assert_eq!(rgba.len(), (w * h * 4) as usize);
+    if w == 0 || h == 0 {
+        return Err(E_INVALIDARG.into());
+    }
+    let w_i32 = i32::try_from(w).map_err(|_| windows::core::Error::from(E_INVALIDARG))?;
+    let h_i32 = i32::try_from(h).map_err(|_| windows::core::Error::from(E_INVALIDARG))?;
+    let expected_bytes = (w as usize)
+        .checked_mul(h as usize)
+        .and_then(|px| px.checked_mul(4))
+        .ok_or_else(|| windows::core::Error::from(E_INVALIDARG))?;
+    if rgba.len() != expected_bytes {
+        return Err(E_INVALIDARG.into());
+    }
+    let stride = (w as usize)
+        .div_ceil(16)
+        .checked_mul(2)
+        .ok_or_else(|| windows::core::Error::from(E_INVALIDARG))?;
+    let mask_len = stride
+        .checked_mul(h as usize)
+        .ok_or_else(|| windows::core::Error::from(E_INVALIDARG))?;
 
     unsafe {
         let mut bmi = BITMAPINFO::default();
         bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-        bmi.bmiHeader.biWidth = w as i32;
-        bmi.bmiHeader.biHeight = -(h as i32); // Negative height => top-down DIB
+        bmi.bmiHeader.biWidth = w_i32;
+        bmi.bmiHeader.biHeight = -h_i32; // Negative height => top-down DIB
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 32;
         bmi.bmiHeader.biCompression = BI_RGB.0;
 
-        let hdc = GetDC(None);
+        let dc_guard = ScreenDcGuard(GetDC(None));
         let mut bits_ptr: *mut core::ffi::c_void = null_mut();
-        let hbm_color = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits_ptr, None, 0)?;
-        let _ = ReleaseDC(None, hdc);
+        let hbm_color =
+            CreateDIBSection(dc_guard.0, &bmi, DIB_RGB_COLORS, &mut bits_ptr, None, 0)?;
+        drop(dc_guard);
 
         if hbm_color.is_invalid() || bits_ptr.is_null() {
             if !hbm_color.is_invalid() {
@@ -68,7 +100,7 @@ pub fn rgba_to_hicon(rgba: &[u8], w: u32, h: u32) -> windows::core::Result<HICON
         }
 
         // Copy RGBA -> BGRA into DIB memory.
-        let dst = std::slice::from_raw_parts_mut(bits_ptr as *mut u8, (w * h * 4) as usize);
+        let dst = std::slice::from_raw_parts_mut(bits_ptr as *mut u8, expected_bytes);
         for (src_px, dst_px) in rgba.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
             dst_px[0] = src_px[2]; // B
             dst_px[1] = src_px[1]; // G
@@ -77,9 +109,8 @@ pub fn rgba_to_hicon(rgba: &[u8], w: u32, h: u32) -> windows::core::Result<HICON
         }
 
         // Monochrome 1-bpp mask bitmap (all zeroes; Windows uses the 32-bit alpha channel).
-        let stride = ((w + 15) / 16) * 2;
-        let mask_bits = vec![0u8; (stride * h) as usize];
-        let hbm_mask = CreateBitmap(w as i32, h as i32, 1, 1, Some(mask_bits.as_ptr() as _));
+        let mask_bits = vec![0u8; mask_len];
+        let hbm_mask = CreateBitmap(w_i32, h_i32, 1, 1, Some(mask_bits.as_ptr() as _));
         if hbm_mask.is_invalid() {
             let _ = DeleteObject(hbm_color);
             return Err(windows::core::Error::from_win32());
@@ -97,5 +128,18 @@ pub fn rgba_to_hicon(rgba: &[u8], w: u32, h: u32) -> windows::core::Result<HICON
         let _ = DeleteObject(hbm_color);
         let _ = DeleteObject(hbm_mask);
         hicon
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rgba_to_hicon_rejects_invalid_dimensions_and_buffer_lengths() {
+        assert!(rgba_to_hicon(&[], 0, 16).is_err());
+        assert!(rgba_to_hicon(&[], 16, 0).is_err());
+        assert!(rgba_to_hicon(&[0u8; 4], 2, 2).is_err());
+        assert!(rgba_to_hicon(&[0u8; 64], u32::MAX, 2).is_err());
     }
 }

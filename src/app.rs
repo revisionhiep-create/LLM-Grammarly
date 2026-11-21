@@ -35,9 +35,21 @@ enum HotkeyTarget {
     ToggleHighlight,
 }
 
+struct FolderPickerGuard {
+    flag: Arc<AtomicBool>,
+    ctx: egui::Context,
+}
+
+impl Drop for FolderPickerGuard {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::Relaxed);
+        self.ctx.request_repaint();
+    }
+}
+
 struct ModelFileCache {
     path: Option<PathBuf>,
-    checked_at: Instant,
+    checked_at: Option<Instant>,
     cached_size: Option<u64>,
     part_size: Option<u64>,
     last_phase_tag: u8,
@@ -47,7 +59,7 @@ impl Default for ModelFileCache {
     fn default() -> Self {
         Self {
             path: None,
-            checked_at: Instant::now() - Duration::from_secs(10),
+            checked_at: None,
             cached_size: None,
             part_size: None,
             last_phase_tag: u8::MAX,
@@ -79,12 +91,14 @@ impl ModelFileCache {
         let tag = phase_tag(phase);
         let path_changed = self.path.as_ref() != preview_path;
         let phase_changed = self.last_phase_tag != tag;
-        let ttl_expired = self.checked_at.elapsed() >= Duration::from_secs(1);
+        let ttl_expired = self
+            .checked_at
+            .map_or(true, |t| t.elapsed() >= Duration::from_secs(1));
 
         if path_changed || phase_changed || ttl_expired {
             self.path = preview_path.cloned();
             self.last_phase_tag = tag;
-            self.checked_at = Instant::now();
+            self.checked_at = Some(Instant::now());
             self.cached_size = preview_path
                 .and_then(|p| fs::metadata(p).ok())
                 .map(|m| m.len());
@@ -880,7 +894,9 @@ impl eframe::App for KeyboardLlmApp {
                                                     )
                                                     .clicked()
                                                 {
-                                                    let _ = fs::remove_file(part);
+                                                    crate::downloader::discard_partial_download(
+                                                        part,
+                                                    );
                                                     self.file_cache.invalidate();
                                                 }
                                             },
@@ -988,11 +1004,15 @@ impl eframe::App for KeyboardLlmApp {
                                 true,
                             );
                         }
-                        AppPhase::On { .. } | AppPhase::Fixing { .. } => {
+                        AppPhase::On { .. } => {
                             if power_switch_row(ui, &theme, "Turn Off", true, true, false).clicked()
                             {
                                 let _ = self.ctrl_tx.send(CtrlCmd::TurnOff);
                             }
+                        }
+                        AppPhase::Fixing { .. } => {
+                            let _ =
+                                power_switch_row(ui, &theme, "Fixing text...", true, false, true);
                         }
                         AppPhase::Unloading => {
                             let _ = power_switch_row(
@@ -1425,18 +1445,19 @@ impl eframe::App for KeyboardLlmApp {
                             .clicked()
                         {
                             self.browsing_folder.store(true, Ordering::Relaxed);
-                            let flag = Arc::clone(&self.browsing_folder);
+                            let guard = FolderPickerGuard {
+                                flag: Arc::clone(&self.browsing_folder),
+                                ctx: ctx.clone(),
+                            };
                             let state_c = Arc::clone(&self.state);
-                            let ctx_c = ctx.clone();
                             let init_dir = self.current_storage_dir();
                             let _ = thread::Builder::new()
                                 .name("folder-picker".to_string())
                                 .spawn(move || {
+                                    let _guard = guard;
                                     if let Some(chosen) = pick_folder_dialog(Some(&init_dir)) {
                                         state_c.lock().unwrap().picked_folder = Some(chosen);
                                     }
-                                    flag.store(false, Ordering::Relaxed);
-                                    ctx_c.request_repaint();
                                 });
                         }
 
