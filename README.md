@@ -8,9 +8,9 @@ Use **Live Fix** to press a system-wide hotkey in any Windows text field, or swi
 
 ## Demo Video
 
-[![Watch the LLM-Grammarly Demo on YouTube](assets/demo-thumbnail.jpg)](https://www.youtube.com/watch?v=uK4h-7c-8w0)
+[![Watch the LLM-Grammarly Demo on YouTube](assets/demo-thumbnail.jpg)](https://www.youtube.com/watch?v=4ZISeBYMDA8)
 
-▶ **[Watch the demo on YouTube](https://www.youtube.com/watch?v=uK4h-7c-8w0)** — GitHub download & unblock, GPU/CPU presets & compute modes, one-click Hugging Face download, Notepad++ Highlight Mode, and live Discord `@mention` demo.
+▶ **[Watch the demo on YouTube](https://www.youtube.com/watch?v=4ZISeBYMDA8)** — GitHub download & unblock, GPU/CPU presets & compute modes, one-click Hugging Face download, Notepad++ Highlight Mode, live Discord `@mention` demo, and Review Docs (`.docx` batch diffs, whole-file fix & timestamped backups).
 
 ---
 
