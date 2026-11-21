@@ -2,7 +2,7 @@
 
 A fast, local, private Windows grammar and spelling corrector written in Rust (`eframe`/`egui` + embedded `llama.cpp` with Vulkan GPU acceleration and automatic CPU fallback).
 
-Press a system-wide hotkey in any Windows text field to fix typos, spelling, grammar, and punctuation locally on your machine — no cloud APIs, no Python runtime, and no external Ollama server required.
+Use **Live Fix** to press a system-wide hotkey in any Windows text field, or switch to **Review Docs** to inspect and apply local AI fixes across `.txt`, `.md`, and `.docx` files with word diffs, formatting preservation, and automatic backups — no cloud APIs, no Python runtime, and no external Ollama server required.
 
 ---
 
@@ -26,15 +26,16 @@ No installation, Python, or external dependencies required — just download and
 1. **Download `LLM-Grammarly.exe`** from the link above.
 2. **Open File Explorer** (press **`Win + E`** or click the folder icon on your taskbar) and go to your **Downloads** folder.
 3. **Move `LLM-Grammarly.exe` to its own folder (recommended)** — for example, create `C:\Users\<YourName>\LLM-Grammarly` and drag `LLM-Grammarly.exe` into it.
-   > **Why?** By default, the app downloads its ~2.52 GB `.gguf` AI model into the same folder as `LLM-Grammarly.exe`, so keeping it in a dedicated folder keeps your Downloads folder tidy.
+   > **Why?** By default, the app stores its ~2.52 GB `.gguf` AI model and document `Backups\` folder alongside `LLM-Grammarly.exe` (automatically falling back to `%LOCALAPPDATA%\LLM Grammarly\Backups` if the `.exe` folder is read-only), so keeping it in a dedicated folder keeps your Downloads folder tidy.
 4. **Double-click `LLM-Grammarly.exe`** to open the app.
    - **If Windows Defender SmartScreen appears** (*"Windows protected your PC"* because the open-source binary is unsigned): click **More info** → **Run anyway**.
    - Alternatively, right-click `LLM-Grammarly.exe` → **Properties** → check **Unblock** → click **OK**, then double-click to launch.
 5. **Download the AI model on first launch**:
    - Click **Download & Turn On** in the app window (or click **Browse...** first if you want to store models in a different folder).
    - Once the download finishes and loads, the top toggle switch slides right and turns **green** (**Ready**).
-6. **Start fixing text anywhere**:
-   - Click into any text box (browser, Discord/Slack, Notepad, email, IDE, etc.) and press **`Ctrl + Q`** (default hotkey) to fix spelling, grammar, and punctuation in place.
+6. **Start fixing text anywhere — or review whole documents**:
+   - **Live Fix tab**: Click into any text box (browser, Discord/Slack, Notepad, email, IDE, etc.) and press **`Ctrl + Q`** (default hotkey) to fix spelling, grammar, and punctuation in place.
+   - **Review Docs tab**: Switch to **Review Docs** below the header bar and drag-and-drop (or click **Browse File...**) to open a `.txt`, `.md`, or `.docx` file for chunked offline review.
    - *(Optional)* Right-click `LLM-Grammarly.exe` in File Explorer and choose **Pin to Start**, **Show more options → Pin to taskbar**, or **Create shortcut** for quick access later.
 
 ---
@@ -53,6 +54,18 @@ No installation, Python, or external dependencies required — just download and
   - **Fix highlighted text only**: Located directly beneath Turn On / Turn Off (defaults to **Off** and saved in `settings.json`). When **On**, skips `Ctrl+A` so only your currently highlighted selection is corrected and replaced.
 - **Dark & Light Mode Switch**:
   - Top-right sun (left / Light Mode) and moon (right / Dark Mode) pill switch next to the status badge. Defaults to **Dark Mode** on first launch, syncs the native Windows title bar, and saves your preference in `settings.json`.
+- **Review Docs Tab (`.txt`, `.md`, `.docx`)**:
+  - Switch between **Live Fix** and **Review Docs** directly beneath the top header bar.
+  - **File Loading**: Load `.txt`, `.md`, or `.docx` documents via drag-and-drop or the native Windows **Browse File...** dialog.
+  - **Prompt Modes**: Choose **Spelling / Grammar Only** (strict typo, grammar, and punctuation fixes preserving wording and tone) or **Rewrite for Clarity** (improves flow, readability, and conciseness while keeping the original meaning).
+  - **Review Scopes & Auto-Load**: Run **One Batch at a Time** (~260 target / 350 max words per batch without splitting paragraphs) to inspect diffs batch by batch, or **Fix Whole File** to process all batches sequentially while auto-accepting normal edits and flagging any chunk whose character length changes by more than `±25%` (`> ±25%`) for manual review. If the model is **Off** when started, clicking the primary Run button automatically loads your cached model first.
+  - **Format & Structure Preservation**: `.txt` and `.md` files preserve original `CRLF`/`LF` line endings, and Markdown skips YAML frontmatter, fenced code blocks, image lines, HTML comments, and thematic breaks verbatim. `.docx` files patch `word/document.xml` text runs in place via word-diff alignment so styles, bold/italic formatting, `<w:hyperlink>` / `<w:ins>` run boundaries, tables, Word fields, tracked deletions (`<w:del>`), and embedded media are preserved intact.
+  - **Diff Viewer, Progress & Cancellation**: Inspect **Inline** diffs (or **Side-by-side** diffs on windows `>= 700 px` wide), accept/reject individual items or click **Accept All in Batch**, monitor live batch percentage on the reused progress bar + Windows taskbar button, and abort cleanly mid-chunk with **Cancel** without touching the source file.
+- **Windows Backup Engine & Safe Atomic Saves**:
+  - **File-Lock Pre-Check**: Exclusively probes write access (`share_mode(0)`) before loading or saving so you are warned immediately if a document is open in Microsoft Word or another app.
+  - **Timestamped Non-Overwriting Backups**: **Save (with Backup)** copies the original file to `<name>_YYYY-MM-DD_HHMMSS.<ext>` (with `_1`, `_2` collision suffixes if needed) inside `Backups\` next to `LLM-Grammarly.exe` (falling back automatically to `%LOCALAPPDATA%\LLM Grammarly\Backups` if read-only, or any writable folder chosen in **Backup Settings**).
+  - **Safe Auto-Pruning**: Enforces your **Keep last backups** limit (default `20`, range `1`–`500`, saved in `settings.json`) after each save, deleting only managed timestamped backup filenames while leaving unrelated files untouched.
+  - **Atomic `.tmp` Write & Validation**: Writes updates to a temporary file, verifies non-empty UTF-8 (`.txt`/`.md`) or valid ZIP/`word/document.xml` (`.docx`), swaps via Windows `ReplaceFileW`, and also provides **Save As...** (locked to the same document extension) to export a copy without modifying the original.
 - **Interactive Hugging Face GGUF Downloader**:
   - First-run and model-switching download panel showing progress percentage, transferred bytes, download speed (MB/s), and ETA.
   - Supports **Pause / Cancel Download** and **Resume** via `.gguf.part` partial files and HTTP `Range` requests, validates the `GGUF` magic header (`b"GGUF"`), automatically converts Hugging Face `/blob/` links to `/resolve/` URLs, and mirrors progress onto the Windows Taskbar button.
@@ -84,6 +97,13 @@ No installation, Python, or external dependencies required — just download and
    - **Tray Behavior**: Enable **Minimize to tray on close** or click **Hide to Tray** to keep the app running quietly in the background.
    - **Notifications**: Toggle the **Notifications** checkbox in the footer to enable or disable silent Windows notifications on **On / Off** and **Highlight mode** changes (enabled by default).
    - **Settings File**: Saved automatically at `%APPDATA%\LLM Grammarly\config\settings.json`.
+5. **Review Documents (`Review Docs` tab)**:
+   - Drag-and-drop a `.txt`, `.md`, or `.docx` file onto the window (or click **Browse File...**).
+   - Select **Prompt Mode** (**Spelling / Grammar Only** or **Rewrite for Clarity**) and **Review Scope** (**One Batch at a Time** or **Fix Whole File**).
+   - Click **Review Current Batch** (or **Fix Whole File**) to start inference — click **Cancel** at any time to stop safely without editing the file on disk.
+   - Review the **Inline** or **Side-by-side** diffs, check any `> ±25%` length-change badges, use **Prev** / **Next** between batches, and click **Accept**, **Reject**, or **Accept All in Batch**.
+   - Click **Save (with Backup)** to back up the original and overwrite in place atomically, or **Save As...** to save a new copy in the same format.
+   - Expand **Backup Settings** at the bottom to change the backup folder (**Browse...** / **Reset**) or adjust **Keep last backups** (`1`–`500`, default `20`).
 
 ---
 
@@ -91,7 +111,8 @@ No installation, Python, or external dependencies required — just download and
 
 - **Facebook `@` mentions / tags**: Full select-all replacement (`Ctrl + A` → paste) does not preserve Facebook tags in posts or comments. Facebook stores mentions as rich-text objects tied to hidden user IDs rather than plain `@username` text, so pasting plain text turns the tag into unlinked text that will not notify the person.
   - **Workaround**: Turn on **Fix highlighted text only** and highlight only the text *excluding* the blue tag, or fix your text first and add the `@` tag last.
-- **Other rich-text formatting**: Because text is pasted back as plain text, rich formatting (such as bold/italic styling or masked hyperlinks) is stripped when replacing an entire field. Plain-text `@handle` mentions on platforms like Discord, X, and Bluesky still resolve normally when posted (on Discord, a pasted mention may look white in the compose box before sending, then turn blue and notify normally in chat).
+- **Other rich-text formatting (`Live Fix` tab)**: Because hotkey replacement pastes plain text via clipboard, rich formatting (such as bold/italic styling or masked hyperlinks) is stripped when replacing an entire field with **Live Fix**. Plain-text `@handle` mentions on platforms like Discord, X, and Bluesky still resolve normally when posted (on Discord, a pasted mention may look white in the compose box before sending, then turn blue and notify normally in chat). *(For Word documents, use the **Review Docs** tab to preserve `.docx` formatting in place.)*
+- **Document review format scope (`Review Docs` tab)**: Supports `.txt`, `.md`, and `.docx` files (`.pdf` is not supported). `.docx` patching edits body and table paragraphs in `word/document.xml` while leaving Word fields (`fldSimple`/`fldChar`), tracked deletions (`<w:del>`/`<w:delText>`), headers/footers, and embedded assets untouched.
 
 ---
 
@@ -130,14 +151,17 @@ LLM-Grammarly/
 │   └── icon.ico          # Multi-resolution neutral keyboard icon (16..256 px)
 └── src/
     ├── main.rs           # Single-instance mutex, --self-test runner, eframe entrypoint
-    ├── app.rs            # egui desktop window layout, cached model status, debounced settings
+    ├── app.rs            # egui two-tab UI (Live Fix & Review Docs), inline/side-by-side diffs, settings
     ├── controller.rs     # AppPhase state machine and background worker coordination
+    ├── doc_review.rs     # Document loader (.txt/.md/.docx), batcher, word diffing, review worker
+    ├── docx.rs           # Formatting-preserving word/document.xml parser, patcher, ZIP validator
+    ├── backup.rs         # Windows backup engine, file-lock pre-check, managed pruning, ReplaceFileW save
     ├── widgets.rs        # Theme palette, custom toggle pills, progress bar, formatting helpers
-    ├── config.rs         # settings.json persistence, HF URL normalization, hotkey/window/compute config
+    ├── config.rs         # settings.json persistence, HF URL normalization, hotkey/window/compute/backup config
     ├── downloader.rs     # Streaming GGUF downloader with HTTP Range resume & magic validation
     ├── hotkey.rs         # Win32 RegisterHotKey loop, SendInput copy/paste, clipboard restore
-    ├── llm.rs            # Embedded llama-cpp-2 worker (Vulkan GPU/CPU fallback, warmup, memory unload)
-    ├── taskbar.rs        # Win32 ITaskbarList3 progress/thumbbar, native tray icon & notifications, folder picker, monitor clamping
+    ├── llm.rs            # Embedded llama-cpp-2 worker (Grammar/Rewrite prompts, cancellation, Vulkan/CPU fallback)
+    ├── taskbar.rs        # Win32 ITaskbarList3 progress/thumbbar, tray icon/notifications, file/folder dialogs, monitor clamping
     ├── icon.rs           # Converts rendered RGBA icon buffers to egui/tray/Win32 HICON formats
     └── icon_render.rs    # Pure-Rust anti-aliased procedural icon renderer shared with build.rs
 ```
