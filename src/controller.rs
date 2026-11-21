@@ -137,6 +137,7 @@ pub fn controller_loop(
     initial_highlight_hotkey: Option<HotkeyBinding>,
     shared_highlighted_only: Arc<AtomicBool>,
     shared_show_notifications: Arc<AtomicBool>,
+    doc_review_busy: Arc<AtomicBool>,
     mut llm: Arc<LlmHandle>,
     mut hotkey: HotkeyController,
     shell: Option<ShellBridge>,
@@ -288,6 +289,12 @@ pub fn controller_loop(
     while let Ok(cmd) = rx.recv() {
         match cmd {
             CtrlCmd::ToggleOnOff => {
+                if doc_review_busy.load(Ordering::Relaxed) {
+                    state.lock().unwrap().notice =
+                        "Wait for or cancel the active document review first".to_string();
+                    ctx.request_repaint();
+                    continue;
+                }
                 let (is_on, is_busy) = {
                     let s = state.lock().unwrap();
                     (s.phase.is_on(), s.phase.is_busy())
@@ -333,6 +340,12 @@ pub fn controller_loop(
                 );
             }
             CtrlCmd::TurnOff => {
+                if doc_review_busy.load(Ordering::Relaxed) {
+                    state.lock().unwrap().notice =
+                        "Wait for or cancel the active document review first".to_string();
+                    ctx.request_repaint();
+                    continue;
+                }
                 let was_on = {
                     let mut s = state.lock().unwrap();
                     if !s.phase.is_on() {
@@ -366,6 +379,12 @@ pub fn controller_loop(
                 }
             }
             CtrlCmd::DownloadModel(raw_url, storage_dir, compute_mode) => {
+                if doc_review_busy.load(Ordering::Relaxed) {
+                    state.lock().unwrap().notice =
+                        "Wait for or cancel the active document review first".to_string();
+                    ctx.request_repaint();
+                    continue;
+                }
                 let (is_on, is_busy, prev_backend_desc) = {
                     let s = state.lock().unwrap();
                     let bd = match &s.phase {

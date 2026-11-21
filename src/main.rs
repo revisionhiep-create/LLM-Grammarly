@@ -1,8 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod backup;
 mod config;
 mod controller;
+mod doc_review;
+mod docx;
 mod downloader;
 mod hotkey;
 mod icon;

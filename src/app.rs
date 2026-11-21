@@ -3,30 +3,108 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::backup::{
+    check_file_not_locked, probe_dir_writable, resolve_backup_dir, ResolvedBackupDir,
+};
 use crate::config::{
-    default_model_dir, display_model_name, effective_model_dir, load_config, local_model_path,
-    normalize_model_url, partial_download_path, preset_for_url, save_config, AppConfig,
-    ComputeMode, HotkeyBinding, WindowState, MODEL_PRESETS,
+    default_backup_dir, default_model_dir, display_model_name, effective_model_dir, load_config,
+    local_model_path, normalize_model_url, partial_download_path, preset_for_url, save_config,
+    AppConfig, ComputeMode, HotkeyBinding, WindowState, MODEL_PRESETS,
 };
 use crate::controller::{controller_loop, notify_highlight_mode, AppPhase, CtrlCmd, SharedState};
+use crate::doc_review::{
+    length_deviation_pct, save_document, save_document_as, spawn_review_worker, DiffOp, DocFormat,
+    DocWorkerEvent, LoadedDocument, ReviewDecision, ReviewScope,
+};
 use crate::hotkey::HotkeyController;
 use crate::icon;
 use crate::icon_render;
-use crate::llm::LlmHandle;
+use crate::llm::{LlmHandle, PromptMode};
 use crate::taskbar::{
-    get_window_placement_state, pick_folder_dialog, restore_window_position,
-    set_window_dark_titlebar, ShellBridge, ShellCommand,
+    get_window_placement_state, pick_document_dialog, pick_folder_dialog, restore_window_position,
+    save_document_dialog, set_window_dark_titlebar, ShellBridge, ShellCommand, TaskbarProgress,
 };
 use crate::widgets::{
     apply_theme_visuals, card_frame, chip_button, draw_neutral_progress_bar, format_bytes,
     format_eta, format_speed, power_switch_row, render_hotkey_row, secondary_button,
     shorten_middle, theme_switch, toggle_switch_row, HotkeyRowAction, ThemeColors,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ActiveTab {
+    #[default]
+    LiveFix,
+    ReviewDocs,
+}
+
+struct DocReviewUiState {
+    doc: Option<LoadedDocument>,
+    prompt_mode: PromptMode,
+    scope: ReviewScope,
+    current_batch: usize,
+    side_by_side: bool,
+    running: bool,
+    cancel: Option<Arc<AtomicBool>>,
+    progress_batch: usize,
+    progress_total_batches: usize,
+    progress_done: usize,
+    progress_total: usize,
+    worker_rx: Option<Receiver<DocWorkerEvent>>,
+    worker_join: Option<JoinHandle<()>>,
+    pending_start_after_load: Option<ReviewScope>,
+    pending_load_seen_busy: bool,
+    error: Option<String>,
+    notice: Option<String>,
+    backup_open: bool,
+    backup_dir_input: String,
+    resolved_backup: ResolvedBackupDir,
+    picking_doc: Arc<AtomicBool>,
+    picking_backup_dir: Arc<AtomicBool>,
+    saving_as: Arc<AtomicBool>,
+    picked_doc_slot: Arc<Mutex<Option<PathBuf>>>,
+    picked_backup_slot: Arc<Mutex<Option<PathBuf>>>,
+    save_as_slot: Arc<Mutex<Option<PathBuf>>>,
+}
+
+impl DocReviewUiState {
+    fn new(cfg: &AppConfig) -> Self {
+        let resolved_backup = resolve_backup_dir(cfg.backup_dir.as_deref());
+        let backup_dir_input = resolved_backup.path.to_string_lossy().into_owned();
+        Self {
+            doc: None,
+            prompt_mode: PromptMode::GrammarOnly,
+            scope: ReviewScope::OneBatch,
+            current_batch: 0,
+            side_by_side: false,
+            running: false,
+            cancel: None,
+            progress_batch: 0,
+            progress_total_batches: 0,
+            progress_done: 0,
+            progress_total: 0,
+            worker_rx: None,
+            worker_join: None,
+            pending_start_after_load: None,
+            pending_load_seen_busy: false,
+            error: None,
+            notice: None,
+            backup_open: false,
+            backup_dir_input,
+            resolved_backup,
+            picking_doc: Arc::new(AtomicBool::new(false)),
+            picking_backup_dir: Arc::new(AtomicBool::new(false)),
+            saving_as: Arc::new(AtomicBool::new(false)),
+            picked_doc_slot: Arc::new(Mutex::new(None)),
+            picked_backup_slot: Arc::new(Mutex::new(None)),
+            save_as_slot: Arc::new(Mutex::new(None)),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HotkeyTarget {
@@ -203,6 +281,8 @@ pub struct KeyboardLlmApp {
     shared_highlighted_only: Arc<AtomicBool>,
     shared_show_notifications: Arc<AtomicBool>,
     shared_recording: Arc<AtomicBool>,
+    doc_review_busy: Arc<AtomicBool>,
+    llm: Arc<LlmHandle>,
     state: Arc<Mutex<SharedState>>,
     ctrl_tx: Sender<CtrlCmd>,
     ctrl_join: Option<JoinHandle<()>>,
@@ -219,6 +299,8 @@ pub struct KeyboardLlmApp {
     recording_hotkey: Option<HotkeyTarget>,
     hotkey_hint: Option<String>,
     browsing_folder: Arc<AtomicBool>,
+    active_tab: ActiveTab,
+    doc_state: DocReviewUiState,
 }
 
 impl KeyboardLlmApp {
@@ -231,6 +313,7 @@ impl KeyboardLlmApp {
         let url_input = config.model_url.clone();
         let effective_dir = effective_model_dir(&config);
         let dir_input = effective_dir.to_string_lossy().into_owned();
+        let doc_state = DocReviewUiState::new(&config);
 
         let shared_url = Arc::new(Mutex::new(url_input.clone()));
         let shared_dir = Arc::new(Mutex::new(effective_dir));
@@ -239,6 +322,7 @@ impl KeyboardLlmApp {
         let shared_highlighted_only = Arc::new(AtomicBool::new(config.fix_highlighted_only));
         let shared_show_notifications = Arc::new(AtomicBool::new(config.show_notifications));
         let shared_recording = Arc::new(AtomicBool::new(false));
+        let doc_review_busy = Arc::new(AtomicBool::new(false));
         let state = Arc::new(Mutex::new(SharedState::default()));
 
         let tex_off = cc.egui_ctx.load_texture(
@@ -312,6 +396,7 @@ impl KeyboardLlmApp {
             Arc::clone(&llm),
             Arc::clone(&shared_highlighted_only),
             Arc::clone(&shared_recording),
+            Arc::clone(&doc_review_busy),
             Arc::new(move |evt| {
                 let _ = tx_hk.send(CtrlCmd::Hotkey(evt));
                 ctx_hk.request_repaint();
@@ -326,6 +411,8 @@ impl KeyboardLlmApp {
         let hk_ctrl = Arc::clone(&shared_hotkey);
         let hl_ctrl = Arc::clone(&shared_highlighted_only);
         let notif_ctrl = Arc::clone(&shared_show_notifications);
+        let doc_busy_ctrl = Arc::clone(&doc_review_busy);
+        let llm_ctrl = Arc::clone(&llm);
         let init_power_hk = config.toggle_power_hotkey;
         let init_hl_hk = config.toggle_highlight_hotkey;
         let tx_ctrl = ctrl_tx.clone();
@@ -347,7 +434,8 @@ impl KeyboardLlmApp {
                     init_hl_hk,
                     hl_ctrl,
                     notif_ctrl,
-                    llm,
+                    doc_busy_ctrl,
+                    llm_ctrl,
                     hotkey,
                     shell_ctrl,
                     ctx_ctrl,
@@ -366,6 +454,8 @@ impl KeyboardLlmApp {
             shared_highlighted_only,
             shared_show_notifications,
             shared_recording,
+            doc_review_busy,
+            llm,
             state,
             ctrl_tx,
             ctrl_join: Some(ctrl_join),
@@ -382,6 +472,8 @@ impl KeyboardLlmApp {
             recording_hotkey: None,
             hotkey_hint: None,
             browsing_folder: Arc::new(AtomicBool::new(false)),
+            active_tab: ActiveTab::LiveFix,
+            doc_state,
         }
     }
 
@@ -608,10 +700,1465 @@ impl KeyboardLlmApp {
             self.last_saved_window = self.config.window;
         }
     }
+
+    fn load_review_doc(&mut self, path: PathBuf) {
+        if self.doc_state.running {
+            self.doc_state.error =
+                Some("Cancel the active document review before opening another file.".to_string());
+            return;
+        }
+        self.doc_state.pending_start_after_load = None;
+        self.doc_state.pending_load_seen_busy = false;
+        self.doc_state.error = None;
+        self.doc_state.notice = None;
+        match LoadedDocument::load(path) {
+            Ok(doc) => {
+                if let Err(lock_err) = check_file_not_locked(&doc.path) {
+                    self.doc_state.error = Some(lock_err.to_string());
+                } else {
+                    self.doc_state.notice = Some(format!(
+                        "Loaded {} ({} batch{}, {} paragraph{})",
+                        doc.path
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("document"),
+                        doc.batches.len(),
+                        if doc.batches.len() == 1 { "" } else { "es" },
+                        doc.items.len(),
+                        if doc.items.len() == 1 { "" } else { "s" },
+                    ));
+                }
+                self.doc_state.doc = Some(doc);
+                self.doc_state.current_batch = 0;
+            }
+            Err(err) => {
+                self.doc_state.error = Some(err.to_string());
+            }
+        }
+    }
+
+    fn apply_backup_dir(&mut self, dir: PathBuf) {
+        if probe_dir_writable(&dir) {
+            if dir == default_backup_dir() {
+                self.config.backup_dir = None;
+            } else {
+                self.config.backup_dir = Some(dir.to_string_lossy().into_owned());
+            }
+            self.doc_state.resolved_backup = resolve_backup_dir(self.config.backup_dir.as_deref());
+            self.doc_state.backup_dir_input =
+                self.doc_state.resolved_backup.path.to_string_lossy().into_owned();
+            self.doc_state.error = None;
+            self.save_current_config();
+        } else {
+            self.config.backup_dir = None;
+            self.doc_state.resolved_backup = resolve_backup_dir(None);
+            self.doc_state.backup_dir_input =
+                self.doc_state.resolved_backup.path.to_string_lossy().into_owned();
+            self.doc_state.error = Some(format!(
+                "Backup folder {} is not writable; using {}",
+                dir.display(),
+                self.doc_state.resolved_backup.path.display()
+            ));
+            self.save_current_config();
+        }
+    }
+
+    fn start_doc_review(&mut self, scope: ReviewScope, ctx: &egui::Context) {
+        let Some(doc) = self.doc_state.doc.as_ref() else {
+            return;
+        };
+        if doc.batches.is_empty() {
+            self.doc_state.notice = Some("No editable paragraphs found in this file.".to_string());
+            return;
+        }
+        if let Err(lock_err) = check_file_not_locked(&doc.path) {
+            self.doc_state.error = Some(lock_err.to_string());
+            return;
+        }
+
+        let mut work_items: Vec<(usize, usize, String)> = Vec::new();
+        let total_batches = match scope {
+            ReviewScope::OneBatch => {
+                let b_idx = self.doc_state.current_batch.min(doc.batches.len() - 1);
+                for &item_idx in &doc.batches[b_idx].item_indices {
+                    work_items.push((0, item_idx, doc.items[item_idx].original.clone()));
+                }
+                1
+            }
+            ReviewScope::WholeFile => {
+                for (b_idx, batch) in doc.batches.iter().enumerate() {
+                    for &item_idx in &batch.item_indices {
+                        work_items.push((b_idx, item_idx, doc.items[item_idx].original.clone()));
+                    }
+                }
+                doc.batches.len()
+            }
+        };
+
+        let total_items = work_items.len();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let preserve_markdown = doc.format == DocFormat::Markdown;
+        let auto_accept_unflagged = scope == ReviewScope::WholeFile;
+
+        match spawn_review_worker(
+            Arc::clone(&self.llm),
+            work_items,
+            total_batches,
+            self.doc_state.prompt_mode,
+            preserve_markdown,
+            auto_accept_unflagged,
+            Arc::clone(&cancel),
+            Arc::clone(&self.doc_review_busy),
+            tx,
+            ctx.clone(),
+        ) {
+            Ok(handle) => {
+                self.doc_state.running = true;
+                self.doc_state.cancel = Some(cancel);
+                self.doc_state.worker_rx = Some(rx);
+                self.doc_state.worker_join = Some(handle);
+                self.doc_state.progress_batch = 0;
+                self.doc_state.progress_total_batches = total_batches;
+                self.doc_state.progress_done = 0;
+                self.doc_state.progress_total = total_items;
+                self.doc_state.error = None;
+                self.doc_state.notice = None;
+                if let Some(sh) = self.shell.as_ref() {
+                    sh.set_progress(TaskbarProgress::Indeterminate);
+                }
+            }
+            Err(err) => {
+                self.doc_state.error = Some(err.to_string());
+            }
+        }
+    }
+
+    fn request_start_doc_review(
+        &mut self,
+        scope: ReviewScope,
+        phase: &AppPhase,
+        preview_cached: bool,
+        ctx: &egui::Context,
+    ) {
+        if self.doc_state.running {
+            return;
+        }
+        let Some(doc) = self.doc_state.doc.as_ref() else {
+            self.doc_state.error = Some("Load a .txt, .md, or .docx file first.".to_string());
+            return;
+        };
+        if doc.batches.is_empty() {
+            self.doc_state.notice = Some("No editable paragraphs found in this file.".to_string());
+            return;
+        }
+        if let Err(lock_err) = check_file_not_locked(&doc.path) {
+            self.doc_state.error = Some(lock_err.to_string());
+            return;
+        }
+
+        match phase {
+            AppPhase::On { .. } => self.start_doc_review(scope, ctx),
+            AppPhase::Off => {
+                if preview_cached {
+                    self.state.lock().unwrap().error = None;
+                    self.doc_state.error = None;
+                    self.doc_state.notice =
+                        Some("Loading model to start document review...".to_string());
+                    self.doc_state.pending_start_after_load = Some(scope);
+                    self.doc_state.pending_load_seen_busy = false;
+                    let url = self.url_input.clone();
+                    if let Ok(norm) = normalize_model_url(&url) {
+                        self.url_input = norm.clone();
+                        self.config.model_url = norm.clone();
+                        *self.shared_url.lock().unwrap() = norm;
+                        self.save_current_config();
+                    }
+                    let dir = self.current_storage_dir();
+                    let _ = self.ctrl_tx.send(CtrlCmd::TurnOn(
+                        self.url_input.clone(),
+                        dir,
+                        self.config.compute_mode,
+                    ));
+                } else {
+                    self.doc_state.error = Some(
+                        "No local model downloaded yet. Download a model in Live Fix first."
+                            .to_string(),
+                    );
+                }
+            }
+            _ => {
+                self.doc_state.error =
+                    Some("Model is currently busy — wait a moment and try again.".to_string());
+            }
+        }
+    }
+
+    fn perform_save(&mut self) {
+        let Some(doc) = self.doc_state.doc.as_ref() else {
+            return;
+        };
+        if !doc
+            .items
+            .iter()
+            .any(|it| it.decision == ReviewDecision::Accepted && it.has_change())
+        {
+            self.doc_state.notice =
+                Some("No accepted suggestions yet — click Accept on items to save.".to_string());
+            return;
+        }
+
+        self.doc_state.resolved_backup = resolve_backup_dir(self.config.backup_dir.as_deref());
+        self.doc_state.backup_dir_input =
+            self.doc_state.resolved_backup.path.to_string_lossy().into_owned();
+        let target_path = doc.path.clone();
+
+        match save_document(
+            doc,
+            &self.doc_state.resolved_backup.path,
+            self.config.backup_keep_count,
+        ) {
+            Ok(backup_path) => {
+                let backup_name = backup_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("backup");
+                if let Ok(reloaded) = LoadedDocument::load(target_path) {
+                    let max_b = reloaded.batches.len().saturating_sub(1);
+                    self.doc_state.current_batch = self.doc_state.current_batch.min(max_b);
+                    self.doc_state.doc = Some(reloaded);
+                }
+                self.doc_state.error = None;
+                self.doc_state.notice = Some(format!("Saved cleanly · Backup: {backup_name}"));
+            }
+            Err(err) => {
+                self.doc_state.error = Some(err.to_string());
+            }
+        }
+    }
+
+    fn perform_save_as(&mut self, dest: PathBuf) {
+        let Some(doc) = self.doc_state.doc.as_ref() else {
+            return;
+        };
+        match save_document_as(doc, &dest) {
+            Ok(()) => {
+                if let Ok(reloaded) = LoadedDocument::load(dest.clone()) {
+                    let max_b = reloaded.batches.len().saturating_sub(1);
+                    self.doc_state.current_batch = self.doc_state.current_batch.min(max_b);
+                    self.doc_state.doc = Some(reloaded);
+                }
+                self.doc_state.error = None;
+                self.doc_state.notice = Some(format!("Saved copy to {}", dest.display()));
+            }
+            Err(err) => {
+                self.doc_state.error = Some(err.to_string());
+            }
+        }
+    }
+
+    fn poll_doc_review_events(
+        &mut self,
+        ctx: &egui::Context,
+        phase: &AppPhase,
+        phase_error: Option<&String>,
+    ) {
+        let picked_doc = self.doc_state.picked_doc_slot.lock().unwrap().take();
+        if let Some(path) = picked_doc {
+            self.load_review_doc(path);
+        }
+
+        let picked_backup = self.doc_state.picked_backup_slot.lock().unwrap().take();
+        if let Some(dir) = picked_backup {
+            self.apply_backup_dir(dir);
+        }
+
+        let save_as_dest = self.doc_state.save_as_slot.lock().unwrap().take();
+        if let Some(dest) = save_as_dest {
+            self.perform_save_as(dest);
+        }
+
+        if self.active_tab == ActiveTab::ReviewDocs {
+            let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+            if let Some(path) = dropped.into_iter().find_map(|f| f.path) {
+                self.load_review_doc(path);
+            }
+        }
+
+        let mut events = Vec::new();
+        if let Some(rx) = self.doc_state.worker_rx.as_ref() {
+            while let Ok(ev) = rx.try_recv() {
+                events.push(ev);
+            }
+        }
+
+        for ev in events {
+            match ev {
+                DocWorkerEvent::Progress {
+                    batch_index,
+                    total_batches,
+                    completed_items,
+                    total_items,
+                } => {
+                    self.doc_state.progress_batch = batch_index;
+                    self.doc_state.progress_total_batches = total_batches;
+                    self.doc_state.progress_done = completed_items;
+                    self.doc_state.progress_total = total_items;
+                    if let Some(sh) = self.shell.as_ref() {
+                        if total_items > 0 {
+                            sh.set_progress(TaskbarProgress::Determinate {
+                                current: completed_items as u64,
+                                total: total_items as u64,
+                            });
+                        }
+                    }
+                }
+                DocWorkerEvent::ItemDone {
+                    item_index,
+                    res,
+                    auto_accept_unflagged,
+                } => {
+                    if let Some(doc) = self.doc_state.doc.as_mut() {
+                        if let Some(item) = doc.items.get_mut(item_index) {
+                            match res {
+                                Ok(fixed) => {
+                                    let changed = fixed != item.original;
+                                    item.diff_ops = if changed {
+                                        crate::doc_review::compute_word_diff(&item.original, &fixed)
+                                    } else {
+                                        Vec::new()
+                                    };
+                                    let delta = if changed {
+                                        length_deviation_pct(&item.original, &fixed)
+                                    } else {
+                                        None
+                                    };
+                                    item.length_delta_pct = delta;
+                                    item.error = None;
+                                    item.decision = if changed
+                                        && auto_accept_unflagged
+                                        && delta.is_none()
+                                    {
+                                        ReviewDecision::Accepted
+                                    } else {
+                                        ReviewDecision::Pending
+                                    };
+                                    item.suggested = Some(fixed);
+                                }
+                                Err(err_msg) => {
+                                    item.error = Some(err_msg);
+                                }
+                            }
+                        }
+                    }
+                }
+                DocWorkerEvent::Finished { cancelled } => {
+                    self.doc_state.running = false;
+                    self.doc_state.cancel = None;
+                    self.doc_state.worker_rx = None;
+                    if let Some(join) = self.doc_state.worker_join.take() {
+                        let _ = join.join();
+                    }
+                    if let Some(sh) = self.shell.as_ref() {
+                        sh.set_progress(TaskbarProgress::None);
+                    }
+                    let flagged_pending = self
+                        .doc_state
+                        .doc
+                        .as_ref()
+                        .map(|d| d.stats().3)
+                        .unwrap_or(0);
+                    self.doc_state.notice = Some(if cancelled {
+                        "Cancelled — completed items remain staged below; file unchanged."
+                            .to_string()
+                    } else if flagged_pending > 0 {
+                        format!(
+                            "Review complete — {flagged_pending} chunk(s) changed length by >25% and need review."
+                        )
+                    } else {
+                        "Review complete — inspect changes below and click Save to apply."
+                            .to_string()
+                    });
+                }
+            }
+        }
+
+        if let Some(pending_scope) = self.doc_state.pending_start_after_load {
+            match phase {
+                AppPhase::Loading | AppPhase::Downloading { .. } => {
+                    self.doc_state.pending_load_seen_busy = true;
+                }
+                AppPhase::On { .. } => {
+                    self.doc_state.pending_start_after_load = None;
+                    self.doc_state.pending_load_seen_busy = false;
+                    self.start_doc_review(pending_scope, ctx);
+                }
+                AppPhase::Off if phase_error.is_some() || self.doc_state.pending_load_seen_busy => {
+                    self.doc_state.pending_start_after_load = None;
+                    self.doc_state.pending_load_seen_busy = false;
+                    if phase_error.is_some() {
+                        self.doc_state.error = phase_error.cloned();
+                    } else {
+                        self.doc_state.notice = Some("Model load cancelled.".to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn render_review_docs_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        theme: &ThemeColors,
+        phase: &AppPhase,
+        preview_cached: bool,
+    ) {
+        let model_busy = matches!(
+            phase,
+            AppPhase::Downloading { .. }
+                | AppPhase::Loading
+                | AppPhase::Unloading
+                | AppPhase::Fixing { .. }
+        );
+        let running = self.doc_state.running;
+        let is_hovering_drop = ctx.input(|i| !i.raw.hovered_files.is_empty());
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
+
+                // 1. Document Picker & Mode Card
+                card_frame(theme).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Document Review (.txt, .md, .docx)")
+                                .size(12.5)
+                                .strong()
+                                .color(theme.text_primary),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let picking = self.doc_state.picking_doc.load(Ordering::Relaxed);
+                            if ui
+                                .add_enabled(
+                                    !running && !picking,
+                                    egui::Button::new(
+                                        egui::RichText::new("Browse File...")
+                                            .size(11.5)
+                                            .color(theme.text_primary),
+                                    )
+                                    .fill(theme.btn_sec_bg)
+                                    .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
+                                    .corner_radius(egui::CornerRadius::same(6))
+                                    .min_size(egui::vec2(92.0, 26.0)),
+                                )
+                                .clicked()
+                            {
+                                self.doc_state.picking_doc.store(true, Ordering::Relaxed);
+                                let guard = FolderPickerGuard {
+                                    flag: Arc::clone(&self.doc_state.picking_doc),
+                                    ctx: ctx.clone(),
+                                };
+                                let slot = Arc::clone(&self.doc_state.picked_doc_slot);
+                                let init_dir = self
+                                    .doc_state
+                                    .doc
+                                    .as_ref()
+                                    .and_then(|d| d.path.parent().map(PathBuf::from));
+                                let _ = thread::Builder::new()
+                                    .name("doc-picker".to_string())
+                                    .spawn(move || {
+                                        let _guard = guard;
+                                        if let Some(chosen) =
+                                            pick_document_dialog(init_dir.as_deref())
+                                        {
+                                            *slot.lock().unwrap() = Some(chosen);
+                                        }
+                                    });
+                            }
+                        });
+                    });
+
+                    // Drop zone / loaded file summary
+                    let drop_border = if is_hovering_drop {
+                        theme.accent_fill
+                    } else {
+                        theme.border_subtle
+                    };
+                    egui::Frame::new()
+                        .fill(theme.bg_callout)
+                        .stroke(egui::Stroke::new(1.0_f32, drop_border))
+                        .corner_radius(egui::CornerRadius::same(8))
+                        .inner_margin(egui::Margin::symmetric(10, 8))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            if let Some(doc) = self.doc_state.doc.as_ref() {
+                                let fname = doc
+                                    .path
+                                    .file_name()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("document");
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(shorten_middle(fname, 36))
+                                            .size(12.5)
+                                            .strong()
+                                            .color(theme.text_primary),
+                                    )
+                                    .on_hover_text(doc.path.to_string_lossy().as_ref());
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{} · {} batch{} · {} chunk{}",
+                                                    doc.format.label(),
+                                                    doc.batches.len(),
+                                                    if doc.batches.len() == 1 { "" } else { "es" },
+                                                    doc.items.len(),
+                                                    if doc.items.len() == 1 { "" } else { "s" },
+                                                ))
+                                                .size(11.0)
+                                                .color(theme.text_muted),
+                                            );
+                                        },
+                                    );
+                                });
+                            } else {
+                                let msg = if is_hovering_drop {
+                                    "Drop .txt, .md, or .docx file to load"
+                                } else {
+                                    "Drag & drop a .txt, .md, or .docx file here — or click Browse File..."
+                                };
+                                ui.label(
+                                    egui::RichText::new(msg).size(11.5).color(theme.text_muted),
+                                );
+                            }
+                        });
+
+                    // Prompt Mode selector
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Prompt Mode")
+                                .size(12.0)
+                                .color(theme.text_muted),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            if chip_button(
+                                ui,
+                                theme,
+                                "Rewrite for Clarity",
+                                self.doc_state.prompt_mode == PromptMode::RewriteClarity,
+                                !running,
+                                egui::vec2(124.0, 24.0),
+                                11.5,
+                            )
+                            .clicked()
+                            {
+                                self.doc_state.prompt_mode = PromptMode::RewriteClarity;
+                            }
+                            if chip_button(
+                                ui,
+                                theme,
+                                "Spelling / Grammar Only",
+                                self.doc_state.prompt_mode == PromptMode::GrammarOnly,
+                                !running,
+                                egui::vec2(150.0, 24.0),
+                                11.5,
+                            )
+                            .clicked()
+                            {
+                                self.doc_state.prompt_mode = PromptMode::GrammarOnly;
+                            }
+                        });
+                    });
+
+                    // Review Scope selector
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Review Scope")
+                                .size(12.0)
+                                .color(theme.text_muted),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            if chip_button(
+                                ui,
+                                theme,
+                                "Fix Whole File",
+                                self.doc_state.scope == ReviewScope::WholeFile,
+                                !running,
+                                egui::vec2(104.0, 24.0),
+                                11.5,
+                            )
+                            .clicked()
+                            {
+                                self.doc_state.scope = ReviewScope::WholeFile;
+                            }
+                            if chip_button(
+                                ui,
+                                theme,
+                                "One Batch at a Time",
+                                self.doc_state.scope == ReviewScope::OneBatch,
+                                !running,
+                                egui::vec2(138.0, 24.0),
+                                11.5,
+                            )
+                            .clicked()
+                            {
+                                self.doc_state.scope = ReviewScope::OneBatch;
+                            }
+                        });
+                    });
+
+                    if running {
+                        let tot = self.doc_state.progress_total;
+                        let done = self.doc_state.progress_done;
+                        let frac = if tot > 0 {
+                            (done as f32 / tot as f32).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        let pct = (frac * 100.0).round();
+                        let b_cur = (self.doc_state.progress_batch + 1)
+                            .min(self.doc_state.progress_total_batches.max(1));
+                        let b_tot = self.doc_state.progress_total_batches.max(1);
+
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Fixing batch {b_cur} of {b_tot} ({pct:.0}%)"
+                                ))
+                                .size(12.0)
+                                .strong()
+                                .color(theme.text_primary),
+                            );
+                        });
+                        draw_neutral_progress_bar(ui, theme, frac, tot == 0);
+                        if secondary_button(ui, theme, "Cancel", 32.0).clicked() {
+                            if let Some(c) = self.doc_state.cancel.as_ref() {
+                                c.store(true, Ordering::Relaxed);
+                            }
+                        }
+                    } else if self.doc_state.pending_start_after_load.is_some() {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(
+                                egui::RichText::new("Loading model before starting review...")
+                                    .size(12.0)
+                                    .color(theme.text_muted),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add(
+                                            egui::Button::new(
+                                                egui::RichText::new("Cancel")
+                                                    .size(11.5)
+                                                    .color(theme.text_primary),
+                                            )
+                                            .fill(theme.btn_sec_bg)
+                                            .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
+                                            .corner_radius(egui::CornerRadius::same(6))
+                                            .min_size(egui::vec2(64.0, 24.0)),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.doc_state.pending_start_after_load = None;
+                                        self.doc_state.pending_load_seen_busy = false;
+                                        self.doc_state.notice =
+                                            Some("Document review cancelled.".to_string());
+                                    }
+                                },
+                            );
+                        });
+                    } else {
+                        let can_start = self.doc_state.doc.is_some() && !model_busy;
+                        let run_label = match self.doc_state.scope {
+                            ReviewScope::OneBatch => "Review Current Batch",
+                            ReviewScope::WholeFile => "Fix Whole File",
+                        };
+                        let (fill, text_col, stroke) = if can_start {
+                            (
+                                theme.accent_fill,
+                                theme.bg_card,
+                                egui::Stroke::NONE,
+                            )
+                        } else {
+                            (
+                                theme.btn_sec_bg,
+                                theme.text_muted,
+                                egui::Stroke::new(1.0_f32, theme.border_med),
+                            )
+                        };
+                        let clicked = ui
+                            .with_layout(egui::Layout::top_down_justified(egui::Align::Center), |ui| {
+                                ui.add_enabled(
+                                    can_start,
+                                    egui::Button::new(
+                                        egui::RichText::new(run_label)
+                                            .size(13.0)
+                                            .strong()
+                                            .color(text_col),
+                                    )
+                                    .fill(fill)
+                                    .stroke(stroke)
+                                    .corner_radius(egui::CornerRadius::same(8))
+                                    .min_size(egui::vec2(ui.available_width(), 36.0)),
+                                )
+                                .clicked()
+                            })
+                            .inner;
+                        if clicked {
+                            self.request_start_doc_review(
+                                self.doc_state.scope,
+                                phase,
+                                preview_cached,
+                                ctx,
+                            );
+                        }
+                    }
+
+                    if let Some(msg) = self.doc_state.notice.as_ref() {
+                        ui.label(
+                            egui::RichText::new(msg)
+                                .size(11.5)
+                                .color(theme.text_muted),
+                        );
+                    }
+
+                    if let Some(err_msg) = self.doc_state.error.clone() {
+                        egui::Frame::new()
+                            .fill(theme.error_bg)
+                            .stroke(egui::Stroke::new(1.0_f32, theme.error_border))
+                            .corner_radius(egui::CornerRadius::same(6))
+                            .inner_margin(egui::Margin::symmetric(8, 6))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(&err_msg)
+                                            .size(11.5)
+                                            .color(theme.error_text),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui.small_button("×").clicked() {
+                                                self.doc_state.error = None;
+                                            }
+                                        },
+                                    );
+                                });
+                            });
+                    }
+                });
+
+                // 2. Review / Diff Panel
+                if let Some(doc) = self.doc_state.doc.as_ref() {
+                    let batch_count = doc.batches.len();
+                    let cur_batch = if batch_count == 0 {
+                        0
+                    } else {
+                        self.doc_state.current_batch.min(batch_count - 1)
+                    };
+                    let cur_batch_words = doc.batches.get(cur_batch).map_or(0, |b| b.word_count);
+                    self.doc_state.current_batch = cur_batch;
+                    let (_reviewed, accepted, pending_rev, flagged_pending) = doc.stats();
+
+                    card_frame(theme).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+
+                        // Navigation + Accept All in Batch
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(
+                                    cur_batch > 0,
+                                    egui::Button::new(
+                                        egui::RichText::new("Prev")
+                                            .size(11.5)
+                                            .color(theme.text_primary),
+                                    )
+                                    .fill(theme.btn_sec_bg)
+                                    .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
+                                    .corner_radius(egui::CornerRadius::same(5))
+                                    .min_size(egui::vec2(52.0, 24.0)),
+                                )
+                                .clicked()
+                            {
+                                self.doc_state.current_batch = cur_batch.saturating_sub(1);
+                            }
+
+                            let nav_label = if batch_count == 0 {
+                                "Batch 0 of 0".to_string()
+                            } else {
+                                format!(
+                                    "Batch {} of {} ({} words)",
+                                    cur_batch + 1,
+                                    batch_count,
+                                    cur_batch_words
+                                )
+                            };
+                            ui.label(
+                                egui::RichText::new(nav_label)
+                                    .size(12.0)
+                                    .strong()
+                                    .color(theme.text_primary),
+                            );
+
+                            if ui
+                                .add_enabled(
+                                    cur_batch + 1 < batch_count,
+                                    egui::Button::new(
+                                        egui::RichText::new("Next")
+                                            .size(11.5)
+                                            .color(theme.text_primary),
+                                    )
+                                    .fill(theme.btn_sec_bg)
+                                    .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
+                                    .corner_radius(egui::CornerRadius::same(5))
+                                    .min_size(egui::vec2(52.0, 24.0)),
+                                )
+                                .clicked()
+                            {
+                                self.doc_state.current_batch = (cur_batch + 1).min(batch_count - 1);
+                            }
+
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui
+                                    .add_enabled(
+                                        !running && batch_count > 0,
+                                        egui::Button::new(
+                                            egui::RichText::new("Accept All in Batch")
+                                                .size(11.5)
+                                                .color(theme.text_primary),
+                                        )
+                                        .fill(theme.btn_sec_bg)
+                                        .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
+                                        .corner_radius(egui::CornerRadius::same(5))
+                                        .min_size(egui::vec2(124.0, 24.0)),
+                                    )
+                                    .clicked()
+                                {
+                                    if let Some(d) = self.doc_state.doc.as_mut() {
+                                        d.accept_all_in_batch(cur_batch);
+                                    }
+                                }
+                            });
+                        });
+
+                        // Summary & optional side-by-side toggle on wide windows
+                        let allow_sbs = ui.available_width() >= 700.0;
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{accepted} accepted · {pending_rev} pending · {flagged_pending} flagged (>±25%)"
+                                ))
+                                .size(11.0)
+                                .color(theme.text_muted),
+                            );
+                            if allow_sbs {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if chip_button(
+                                            ui,
+                                            theme,
+                                            "Side-by-side",
+                                            self.doc_state.side_by_side,
+                                            true,
+                                            egui::vec2(84.0, 22.0),
+                                            11.0,
+                                        )
+                                        .clicked()
+                                        {
+                                            self.doc_state.side_by_side = true;
+                                        }
+                                        if chip_button(
+                                            ui,
+                                            theme,
+                                            "Inline",
+                                            !self.doc_state.side_by_side,
+                                            true,
+                                            egui::vec2(56.0, 22.0),
+                                            11.0,
+                                        )
+                                        .clicked()
+                                        {
+                                            self.doc_state.side_by_side = false;
+                                        }
+                                    },
+                                );
+                            }
+                        });
+
+                        // Collect item actions in this frame and apply after borrowing immutably
+                        let mut item_actions: Vec<(usize, ReviewDecision)> = Vec::new();
+                        if let Some(batch) = self
+                            .doc_state
+                            .doc
+                            .as_ref()
+                            .and_then(|d| d.batches.get(cur_batch))
+                        {
+                            let items_ref = &self.doc_state.doc.as_ref().unwrap().items;
+                            for &item_idx in &batch.item_indices {
+                                let item = &items_ref[item_idx];
+                                egui::Frame::new()
+                                    .fill(theme.bg_callout)
+                                    .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
+                                    .corner_radius(egui::CornerRadius::same(6))
+                                    .inner_margin(egui::Margin::same(10))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.spacing_mut().item_spacing.y = 6.0;
+
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                egui::RichText::new(format!("#{}", item.id + 1))
+                                                    .size(11.0)
+                                                    .strong()
+                                                    .color(theme.text_muted),
+                                            );
+                                            let (status_lbl, status_col) =
+                                                if item.suggested.is_some() && !item.has_change() {
+                                                    ("No changes", theme.text_muted)
+                                                } else {
+                                                    match item.decision {
+                                                        ReviewDecision::Accepted => {
+                                                            ("Accepted", theme.dot_ready)
+                                                        }
+                                                        ReviewDecision::Rejected => {
+                                                            ("Rejected", theme.text_muted)
+                                                        }
+                                                        ReviewDecision::Pending => {
+                                                            if item.suggested.is_some() {
+                                                                ("Pending review", theme.dot_busy)
+                                                            } else {
+                                                                ("Not reviewed", theme.dot_off)
+                                                            }
+                                                        }
+                                                    }
+                                                };
+                                            ui.label(
+                                                egui::RichText::new(status_lbl)
+                                                    .size(11.0)
+                                                    .color(status_col),
+                                            );
+
+                                            if let Some(pct) = item.length_delta_pct {
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        egui::Frame::new()
+                                                            .fill(theme.bg_card)
+                                                            .stroke(egui::Stroke::new(
+                                                                1.0_f32,
+                                                                theme.dot_busy,
+                                                            ))
+                                                            .corner_radius(egui::CornerRadius::same(
+                                                                4,
+                                                            ))
+                                                            .inner_margin(egui::Margin::symmetric(
+                                                                6, 2,
+                                                            ))
+                                                            .show(ui, |ui| {
+                                                                ui.label(
+                                                                    egui::RichText::new(format!(
+                                                                        "Length {pct:+.0}% — review"
+                                                                    ))
+                                                                    .size(10.5)
+                                                                    .color(theme.dot_busy),
+                                                                );
+                                                            });
+                                                    },
+                                                );
+                                            }
+                                        });
+
+                                        if let Some(err) = item.error.as_deref() {
+                                            ui.label(
+                                                egui::RichText::new(format!("Error: {err}"))
+                                                    .size(11.5)
+                                                    .color(theme.error_text),
+                                            );
+                                        } else if item.suggested.is_some() {
+                                            if !item.has_change() {
+                                                ui.label(
+                                                    egui::RichText::new("No changes suggested.")
+                                                        .size(11.0)
+                                                        .color(theme.text_muted),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new(&item.original)
+                                                        .size(12.0)
+                                                        .color(theme.text_primary),
+                                                );
+                                            } else {
+                                                let ops = &item.diff_ops;
+                                                if allow_sbs && self.doc_state.side_by_side {
+                                                    let (orig_job, sug_job) =
+                                                        build_side_diff_jobs(&ops, theme);
+                                                    ui.columns(2, |cols| {
+                                                        cols[0].label(
+                                                            egui::RichText::new("Original")
+                                                                .size(10.5)
+                                                                .color(theme.text_muted),
+                                                        );
+                                                        cols[0].label(orig_job);
+                                                        cols[1].label(
+                                                            egui::RichText::new("Suggested")
+                                                                .size(10.5)
+                                                                .color(theme.text_muted),
+                                                        );
+                                                        cols[1].label(sug_job);
+                                                    });
+                                                } else {
+                                                    let job = build_inline_diff_job(&ops, theme);
+                                                    ui.label(job);
+                                                }
+
+                                                ui.horizontal(|ui| {
+                                                    ui.spacing_mut().item_spacing.x = 6.0;
+                                                    if chip_button(
+                                                        ui,
+                                                        theme,
+                                                        "Accept",
+                                                        item.decision == ReviewDecision::Accepted,
+                                                        !running,
+                                                        egui::vec2(66.0, 22.0),
+                                                        11.0,
+                                                    )
+                                                    .clicked()
+                                                    {
+                                                        item_actions.push((
+                                                            item_idx,
+                                                            ReviewDecision::Accepted,
+                                                        ));
+                                                    }
+                                                    if chip_button(
+                                                        ui,
+                                                        theme,
+                                                        "Reject",
+                                                        item.decision == ReviewDecision::Rejected,
+                                                        !running,
+                                                        egui::vec2(62.0, 22.0),
+                                                        11.0,
+                                                    )
+                                                    .clicked()
+                                                    {
+                                                        item_actions.push((
+                                                            item_idx,
+                                                            ReviewDecision::Rejected,
+                                                        ));
+                                                    }
+                                                });
+                                            }
+                                        } else {
+                                            ui.label(
+                                                egui::RichText::new(&item.original)
+                                                    .size(12.0)
+                                                    .color(theme.text_muted),
+                                            );
+                                        }
+                                    });
+                            }
+                        }
+
+                        if let Some(d) = self.doc_state.doc.as_mut() {
+                            for (idx, dec) in item_actions {
+                                d.items[idx].decision = dec;
+                            }
+                        }
+
+                        // Save & Save As row
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            if ui
+                                .add_enabled(
+                                    !running && accepted > 0,
+                                    egui::Button::new(
+                                        egui::RichText::new("Save (with Backup)")
+                                            .size(12.0)
+                                            .strong()
+                                            .color(theme.text_primary),
+                                    )
+                                    .fill(theme.btn_sec_bg)
+                                    .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
+                                    .corner_radius(egui::CornerRadius::same(6))
+                                    .min_size(egui::vec2(142.0, 28.0)),
+                                )
+                                .clicked()
+                            {
+                                self.perform_save();
+                            }
+
+                            let saving_as = self.doc_state.saving_as.load(Ordering::Relaxed);
+                            if ui
+                                .add_enabled(
+                                    !running && !saving_as,
+                                    egui::Button::new(
+                                        egui::RichText::new("Save As...")
+                                            .size(12.0)
+                                            .color(theme.text_primary),
+                                    )
+                                    .fill(theme.btn_sec_bg)
+                                    .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
+                                    .corner_radius(egui::CornerRadius::same(6))
+                                    .min_size(egui::vec2(86.0, 28.0)),
+                                )
+                                .clicked()
+                            {
+                                if let Some(d) = self.doc_state.doc.as_ref() {
+                                    self.doc_state.saving_as.store(true, Ordering::Relaxed);
+                                    let guard = FolderPickerGuard {
+                                        flag: Arc::clone(&self.doc_state.saving_as),
+                                        ctx: ctx.clone(),
+                                    };
+                                    let slot = Arc::clone(&self.doc_state.save_as_slot);
+                                    let init_dir = d.path.parent().map(PathBuf::from);
+                                    let stem = d
+                                        .path
+                                        .file_stem()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or("document");
+                                    let ext = d.format.default_extension().to_string();
+                                    let default_name = format!("{stem}_fixed.{ext}");
+                                    let _ = thread::Builder::new()
+                                        .name("doc-save-as".to_string())
+                                        .spawn(move || {
+                                            let _guard = guard;
+                                            if let Some(dest) = save_document_dialog(
+                                                init_dir.as_deref(),
+                                                &default_name,
+                                                &ext,
+                                            ) {
+                                                *slot.lock().unwrap() = Some(dest);
+                                            }
+                                        });
+                                }
+                            }
+                        });
+                    });
+                }
+
+                // 3. Backup Settings Card (collapsible, matching Model Storage Folder row)
+                card_frame(theme).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+
+                    let folder_tag = if self.doc_state.resolved_backup.is_custom {
+                        "Custom folder"
+                    } else if self.doc_state.resolved_backup.used_fallback {
+                        "LocalAppData fallback"
+                    } else {
+                        "App folder (.exe)"
+                    };
+
+                    ui.horizontal(|ui| {
+                        let arrow = if self.doc_state.backup_open {
+                            "▾ Backup Settings"
+                        } else {
+                            "▸ Backup Settings"
+                        };
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(arrow)
+                                        .size(12.5)
+                                        .strong()
+                                        .color(theme.text_primary),
+                                )
+                                .frame(false),
+                            )
+                            .clicked()
+                        {
+                            self.doc_state.backup_open = !self.doc_state.backup_open;
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Keep {} · {folder_tag}",
+                                    self.config.backup_keep_count
+                                ))
+                                .size(11.0)
+                                .color(theme.text_muted),
+                            );
+                        });
+                    });
+
+                    if self.doc_state.backup_open {
+                        let is_custom_backup = self.config.backup_dir.is_some();
+                        ui.horizontal(|ui| {
+                            let btn_space = if is_custom_backup { 156.0 } else { 96.0 };
+                            let edit_w = (ui.available_width() - btn_space).max(120.0);
+                            let dir_resp = ui.add_enabled(
+                                !running,
+                                egui::TextEdit::singleline(&mut self.doc_state.backup_dir_input)
+                                    .desired_width(edit_w)
+                                    .hint_text("Folder to save document backups")
+                                    .margin(egui::Margin::symmetric(8, 5)),
+                            );
+                            if dir_resp.lost_focus() {
+                                let trimmed = self.doc_state.backup_dir_input.trim().to_string();
+                                if trimmed.is_empty() {
+                                    self.config.backup_dir = None;
+                                    self.doc_state.resolved_backup = resolve_backup_dir(None);
+                                    self.doc_state.backup_dir_input = self
+                                        .doc_state
+                                        .resolved_backup
+                                        .path
+                                        .to_string_lossy()
+                                        .into_owned();
+                                    self.save_current_config();
+                                } else {
+                                    let cand = PathBuf::from(&trimmed);
+                                    if cand != self.doc_state.resolved_backup.path {
+                                        self.apply_backup_dir(cand);
+                                    }
+                                }
+                            }
+
+                            let browsing =
+                                self.doc_state.picking_backup_dir.load(Ordering::Relaxed);
+                            if ui
+                                .add_enabled(
+                                    !running && !browsing,
+                                    egui::Button::new(
+                                        egui::RichText::new("Browse...")
+                                            .size(11.5)
+                                            .color(theme.text_primary),
+                                    )
+                                    .fill(theme.btn_sec_bg)
+                                    .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
+                                    .corner_radius(egui::CornerRadius::same(6))
+                                    .min_size(egui::vec2(74.0, 26.0)),
+                                )
+                                .clicked()
+                            {
+                                self.doc_state
+                                    .picking_backup_dir
+                                    .store(true, Ordering::Relaxed);
+                                let guard = FolderPickerGuard {
+                                    flag: Arc::clone(&self.doc_state.picking_backup_dir),
+                                    ctx: ctx.clone(),
+                                };
+                                let slot = Arc::clone(&self.doc_state.picked_backup_slot);
+                                let init_dir = self.doc_state.resolved_backup.path.clone();
+                                let _ = thread::Builder::new()
+                                    .name("backup-folder-picker".to_string())
+                                    .spawn(move || {
+                                        let _guard = guard;
+                                        if let Some(chosen) = pick_folder_dialog(Some(&init_dir)) {
+                                            *slot.lock().unwrap() = Some(chosen);
+                                        }
+                                    });
+                            }
+
+                            if is_custom_backup
+                                && ui
+                                    .add_enabled(
+                                        !running,
+                                        egui::Button::new(
+                                            egui::RichText::new("Reset")
+                                                .size(11.5)
+                                                .color(theme.text_muted),
+                                        )
+                                        .fill(egui::Color32::TRANSPARENT)
+                                        .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
+                                        .corner_radius(egui::CornerRadius::same(6))
+                                        .min_size(egui::vec2(52.0, 26.0)),
+                                    )
+                                    .clicked()
+                            {
+                                self.config.backup_dir = None;
+                                self.doc_state.resolved_backup = resolve_backup_dir(None);
+                                self.doc_state.backup_dir_input = self
+                                    .doc_state
+                                    .resolved_backup
+                                    .path
+                                    .to_string_lossy()
+                                    .into_owned();
+                                self.save_current_config();
+                            }
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Keep last backups")
+                                    .size(12.0)
+                                    .color(theme.text_muted),
+                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                if ui
+                                    .add_enabled(
+                                        !running && self.config.backup_keep_count < 500,
+                                        egui::Button::new(
+                                            egui::RichText::new("+")
+                                                .size(12.0)
+                                                .color(theme.text_primary),
+                                        )
+                                        .fill(theme.btn_sec_bg)
+                                        .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
+                                        .corner_radius(egui::CornerRadius::same(5))
+                                        .min_size(egui::vec2(26.0, 22.0)),
+                                    )
+                                    .clicked()
+                                {
+                                    self.config.backup_keep_count =
+                                        (self.config.backup_keep_count + 1).min(500);
+                                    self.save_current_config();
+                                }
+
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{}",
+                                        self.config.backup_keep_count
+                                    ))
+                                    .size(12.0)
+                                    .strong()
+                                    .color(theme.text_primary),
+                                );
+
+                                if ui
+                                    .add_enabled(
+                                        !running && self.config.backup_keep_count > 1,
+                                        egui::Button::new(
+                                            egui::RichText::new("-")
+                                                .size(12.0)
+                                                .color(theme.text_primary),
+                                        )
+                                        .fill(theme.btn_sec_bg)
+                                        .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
+                                        .corner_radius(egui::CornerRadius::same(5))
+                                        .min_size(egui::vec2(26.0, 22.0)),
+                                    )
+                                    .clicked()
+                                {
+                                    self.config.backup_keep_count =
+                                        self.config.backup_keep_count.saturating_sub(1).max(1);
+                                    self.save_current_config();
+                                }
+                            });
+                        });
+                    }
+                });
+            });
+    }
+}
+
+fn build_inline_diff_job(ops: &[DiffOp], theme: &ThemeColors) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let font = egui::FontId::proportional(12.0);
+    for op in ops {
+        match op {
+            DiffOp::Equal(s) => {
+                job.append(
+                    s,
+                    0.0,
+                    egui::TextFormat {
+                        font_id: font.clone(),
+                        color: theme.text_primary,
+                        ..Default::default()
+                    },
+                );
+            }
+            DiffOp::Delete(s) => {
+                job.append(
+                    s,
+                    0.0,
+                    egui::TextFormat {
+                        font_id: font.clone(),
+                        color: theme.error_text,
+                        background: theme.error_bg,
+                        strikethrough: egui::Stroke::new(1.0_f32, theme.error_text),
+                        ..Default::default()
+                    },
+                );
+            }
+            DiffOp::Insert(s) => {
+                job.append(
+                    s,
+                    0.0,
+                    egui::TextFormat {
+                        font_id: font.clone(),
+                        color: theme.dot_ready,
+                        background: theme.bg_keycap,
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    }
+    job
+}
+
+fn build_side_diff_jobs(
+    ops: &[DiffOp],
+    theme: &ThemeColors,
+) -> (egui::text::LayoutJob, egui::text::LayoutJob) {
+    let mut orig = egui::text::LayoutJob::default();
+    let mut sug = egui::text::LayoutJob::default();
+    let font = egui::FontId::proportional(12.0);
+    for op in ops {
+        match op {
+            DiffOp::Equal(s) => {
+                let fmt = egui::TextFormat {
+                    font_id: font.clone(),
+                    color: theme.text_primary,
+                    ..Default::default()
+                };
+                orig.append(s, 0.0, fmt.clone());
+                sug.append(s, 0.0, fmt);
+            }
+            DiffOp::Delete(s) => {
+                orig.append(
+                    s,
+                    0.0,
+                    egui::TextFormat {
+                        font_id: font.clone(),
+                        color: theme.error_text,
+                        background: theme.error_bg,
+                        strikethrough: egui::Stroke::new(1.0_f32, theme.error_text),
+                        ..Default::default()
+                    },
+                );
+            }
+            DiffOp::Insert(s) => {
+                sug.append(
+                    s,
+                    0.0,
+                    egui::TextFormat {
+                        font_id: font.clone(),
+                        color: theme.dot_ready,
+                        background: theme.bg_keycap,
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    }
+    (orig, sug)
 }
 
 impl Drop for KeyboardLlmApp {
     fn drop(&mut self) {
+        if let Some(cancel) = self.doc_state.cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(join) = self.doc_state.worker_join.take() {
+            let _ = join.join();
+        }
         self.persist_pending_on_exit();
         let _ = self.ctrl_tx.send(CtrlCmd::ShutdownController);
         if let Some(join) = self.ctrl_join.take() {
@@ -636,6 +2183,9 @@ impl eframe::App for KeyboardLlmApp {
                     shell.hide_window();
                 }
             } else {
+                if let Some(cancel) = self.doc_state.cancel.as_ref() {
+                    cancel.store(true, Ordering::Relaxed);
+                }
                 self.persist_pending_on_exit();
                 let _ = self.ctrl_tx.send(CtrlCmd::ShutdownController);
             }
@@ -696,6 +2246,9 @@ impl eframe::App for KeyboardLlmApp {
         if config_dirty {
             self.save_current_config();
         }
+
+        self.poll_doc_review_events(ctx, &phase, error.as_ref());
+        let doc_busy = self.doc_review_busy.load(Ordering::Relaxed);
 
         let is_on = phase.is_on();
         if is_on != self.last_viewport_active {
@@ -804,6 +2357,39 @@ impl eframe::App for KeyboardLlmApp {
                     });
                 });
 
+                // 1b. Tab switcher
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    if chip_button(
+                        ui,
+                        &theme,
+                        "Live Fix",
+                        self.active_tab == ActiveTab::LiveFix,
+                        true,
+                        egui::vec2(86.0, 26.0),
+                        12.0,
+                    )
+                    .clicked()
+                    {
+                        self.active_tab = ActiveTab::LiveFix;
+                    }
+                    if chip_button(
+                        ui,
+                        &theme,
+                        "Review Docs",
+                        self.active_tab == ActiveTab::ReviewDocs,
+                        true,
+                        egui::vec2(104.0, 26.0),
+                        12.0,
+                    )
+                    .clicked()
+                    {
+                        self.active_tab = ActiveTab::ReviewDocs;
+                    }
+                });
+
+                match self.active_tab {
+                    ActiveTab::LiveFix => {
                 // 2. Main Power & Interactive Download Card
                 card_frame(&theme).show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -1005,7 +2591,12 @@ impl eframe::App for KeyboardLlmApp {
                             );
                         }
                         AppPhase::On { .. } => {
-                            if power_switch_row(ui, &theme, "Turn Off", true, true, false).clicked()
+                            let label = if doc_busy {
+                                "Turn Off (Review Docs active)"
+                            } else {
+                                "Turn Off"
+                            };
+                            if power_switch_row(ui, &theme, label, true, !doc_busy, false).clicked()
                             {
                                 let _ = self.ctrl_tx.send(CtrlCmd::TurnOff);
                             }
@@ -1274,6 +2865,7 @@ impl eframe::App for KeyboardLlmApp {
 
                         let can_click_dl = !is_downloading
                             && !is_busy_loading
+                            && !doc_busy
                             && (cached_size.is_none()
                                 || is_different_from_active
                                 || is_compute_changed);
@@ -1535,6 +3127,17 @@ impl eframe::App for KeyboardLlmApp {
                         });
                     });
                 });
+                    }
+                    ActiveTab::ReviewDocs => {
+                        self.render_review_docs_tab(
+                            ui,
+                            ctx,
+                            &theme,
+                            &phase,
+                            cached_size.is_some(),
+                        );
+                    }
+                }
             });
     }
 }

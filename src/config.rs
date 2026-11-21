@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 pub const DEFAULT_MODEL_URL: &str = "https://huggingface.co/HauhauCS/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive/resolve/main/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf";
 pub const CPU_STRONG_MODEL_URL: &str = "https://huggingface.co/HauhauCS/Qwen3.5-2B-Uncensored-HauhauCS-Aggressive/resolve/main/Qwen3.5-2B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf";
 pub const CPU_WEAK_MODEL_URL: &str = "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-Q4_K_M.gguf";
+pub const DEFAULT_BACKUP_KEEP_COUNT: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -169,6 +170,8 @@ pub struct AppConfig {
     pub show_notifications: bool,
     pub dark_mode: bool,
     pub window: Option<WindowState>,
+    pub backup_dir: Option<String>,
+    pub backup_keep_count: usize,
 }
 
 impl Default for AppConfig {
@@ -185,6 +188,8 @@ impl Default for AppConfig {
             show_notifications: true,
             dark_mode: true,
             window: None,
+            backup_dir: None,
+            backup_keep_count: DEFAULT_BACKUP_KEEP_COUNT,
         }
     }
 }
@@ -233,6 +238,20 @@ pub fn effective_model_dir(cfg: &AppConfig) -> PathBuf {
     default_model_dir()
 }
 
+pub fn default_backup_dir() -> PathBuf {
+    default_model_dir().join("Backups")
+}
+
+pub fn fallback_backup_dir() -> PathBuf {
+    if let Some(dirs) = directories::ProjectDirs::from("", "", "LLM Grammarly") {
+        dirs.data_local_dir().join("Backups")
+    } else if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        PathBuf::from(local).join("LLM Grammarly").join("Backups")
+    } else {
+        PathBuf::from("Backups")
+    }
+}
+
 pub fn load_config() -> AppConfig {
     let path = config_file_path();
     let raw = match fs::read_to_string(&path) {
@@ -262,6 +281,7 @@ pub fn load_config() -> AppConfig {
             cfg.toggle_highlight_hotkey = None;
         }
     }
+    cfg.backup_keep_count = cfg.backup_keep_count.clamp(1, 500);
     cfg
 }
 
@@ -624,5 +644,26 @@ mod tests {
             suffix,
             path.display()
         );
+    }
+
+    #[test]
+    fn backup_config_defaults_and_roundtrips() {
+        let def = AppConfig::default();
+        assert!(def.backup_dir.is_none());
+        assert_eq!(def.backup_keep_count, DEFAULT_BACKUP_KEEP_COUNT);
+
+        let legacy_json =
+            r#"{"model_url":"https://huggingface.co/a/b/resolve/main/m.gguf"}"#;
+        let decoded_legacy: AppConfig = serde_json::from_str(legacy_json).unwrap();
+        assert!(decoded_legacy.backup_dir.is_none());
+        assert_eq!(decoded_legacy.backup_keep_count, DEFAULT_BACKUP_KEEP_COUNT);
+
+        let mut cfg = AppConfig::default();
+        cfg.backup_dir = Some("D:\\Backups".to_string());
+        cfg.backup_keep_count = 7;
+        let encoded = serde_json::to_string(&cfg).unwrap();
+        let decoded: AppConfig = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.backup_dir.as_deref(), Some("D:\\Backups"));
+        assert_eq!(decoded.backup_keep_count, 7);
     }
 }

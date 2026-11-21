@@ -17,13 +17,15 @@ use windows::Win32::System::Com::{
 use windows::Win32::UI::Controls::{
     ImageList_Create, ImageList_Destroy, ImageList_ReplaceIcon, HIMAGELIST, ILC_COLOR32, ILC_MASK,
 };
+use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
-    DefSubclassProc, FileOpenDialog, IFileOpenDialog, IShellItem, ITaskbarList3,
-    RemoveWindowSubclass, SHCreateItemFromParsingName, SetWindowSubclass, Shell_NotifyIconW,
-    TaskbarList, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP,
-    NIIF_INFO, NIIF_LARGE_ICON, NIIF_NOSOUND, NIIF_USER, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-    NOTIFYICONDATAW, SIGDN_FILESYSPATH, TBPF_INDETERMINATE, TBPF_NOPROGRESS, TBPF_NORMAL,
-    THBF_DISABLED, THBF_ENABLED, THBN_CLICKED, THB_BITMAP, THB_FLAGS, THB_TOOLTIP, THUMBBUTTON,
+    DefSubclassProc, FileOpenDialog, FileSaveDialog, IFileOpenDialog, IFileSaveDialog, IShellItem,
+    ITaskbarList3, RemoveWindowSubclass, SHCreateItemFromParsingName, SetWindowSubclass,
+    Shell_NotifyIconW, TaskbarList, FOS_FORCEFILESYSTEM, FOS_OVERWRITEPROMPT, FOS_PICKFOLDERS,
+    NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_LARGE_ICON, NIIF_NOSOUND, NIIF_USER,
+    NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, SIGDN_FILESYSPATH, TBPF_INDETERMINATE,
+    TBPF_NOPROGRESS, TBPF_NORMAL, THBF_DISABLED, THBF_ENABLED, THBN_CLICKED, THB_BITMAP,
+    THB_FLAGS, THB_TOOLTIP, THUMBBUTTON,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, ChangeWindowMessageFilterEx, CreatePopupMenu, DestroyIcon, DestroyMenu,
@@ -827,6 +829,110 @@ pub fn pick_folder_dialog(initial_dir: Option<&Path>) -> Option<PathBuf> {
                     .encode_utf16()
                     .chain(std::iter::once(0))
                     .collect();
+                if let Ok(item) =
+                    SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(wide.as_ptr()), None)
+                {
+                    let _ = dialog.SetFolder(&item);
+                }
+            }
+        }
+
+        dialog.Show(HWND::default()).ok()?;
+        let result_item = dialog.GetResult().ok()?;
+        let pwstr = result_item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path_str = pwstr.to_string().ok();
+        CoTaskMemFree(Some(pwstr.0 as _));
+        path_str.map(PathBuf::from)
+    }
+}
+
+/// Opens a native Windows file picker for `.txt`, `.md`, and `.docx` documents. Must be called from an STA thread.
+pub fn pick_document_dialog(initial_dir: Option<&Path>) -> Option<PathBuf> {
+    unsafe {
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let _com_guard = ComInitGuard(hr.is_ok());
+
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let _ = dialog.SetOptions(FOS_FORCEFILESYSTEM);
+
+        let docs_name = wide_null("Documents (*.txt, *.md, *.docx)");
+        let docs_spec = wide_null("*.txt;*.md;*.docx");
+        let all_name = wide_null("All Files (*.*)");
+        let all_spec = wide_null("*.*");
+        let filters = [
+            COMDLG_FILTERSPEC {
+                pszName: PCWSTR(docs_name.as_ptr()),
+                pszSpec: PCWSTR(docs_spec.as_ptr()),
+            },
+            COMDLG_FILTERSPEC {
+                pszName: PCWSTR(all_name.as_ptr()),
+                pszSpec: PCWSTR(all_spec.as_ptr()),
+            },
+        ];
+        let _ = dialog.SetFileTypes(&filters);
+        let _ = dialog.SetFileTypeIndex(1);
+
+        if let Some(dir) = initial_dir {
+            if dir.exists() {
+                let wide = wide_null(&dir.as_os_str().to_string_lossy());
+                if let Ok(item) =
+                    SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(wide.as_ptr()), None)
+                {
+                    let _ = dialog.SetFolder(&item);
+                }
+            }
+        }
+
+        dialog.Show(HWND::default()).ok()?;
+        let result_item = dialog.GetResult().ok()?;
+        let pwstr = result_item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path_str = pwstr.to_string().ok();
+        CoTaskMemFree(Some(pwstr.0 as _));
+        path_str.map(PathBuf::from)
+    }
+}
+
+/// Opens a native Windows Save As dialog for documents. Must be called from an STA thread.
+pub fn save_document_dialog(
+    initial_dir: Option<&Path>,
+    default_name: &str,
+    default_ext: &str,
+) -> Option<PathBuf> {
+    unsafe {
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let _com_guard = ComInitGuard(hr.is_ok());
+
+        let dialog: IFileSaveDialog =
+            CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let _ = dialog.SetOptions(FOS_FORCEFILESYSTEM | FOS_OVERWRITEPROMPT);
+
+        let ext_clean = default_ext.trim_start_matches('.');
+        let filter_name = wide_null(&format!(
+            "{} Document (*.{ext_clean})",
+            ext_clean.to_ascii_uppercase()
+        ));
+        let filter_spec = wide_null(&format!("*.{ext_clean}"));
+        if !ext_clean.is_empty() {
+            let filters = [COMDLG_FILTERSPEC {
+                pszName: PCWSTR(filter_name.as_ptr()),
+                pszSpec: PCWSTR(filter_spec.as_ptr()),
+            }];
+            let _ = dialog.SetFileTypes(&filters);
+            let _ = dialog.SetFileTypeIndex(1);
+        }
+
+        if !ext_clean.is_empty() {
+            let ext_w = wide_null(ext_clean);
+            let _ = dialog.SetDefaultExtension(PCWSTR(ext_w.as_ptr()));
+        }
+        if !default_name.is_empty() {
+            let name_w = wide_null(default_name);
+            let _ = dialog.SetFileName(PCWSTR(name_w.as_ptr()));
+        }
+        if let Some(dir) = initial_dir {
+            if dir.exists() {
+                let wide = wide_null(&dir.as_os_str().to_string_lossy());
                 if let Ok(item) =
                     SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(wide.as_ptr()), None)
                 {

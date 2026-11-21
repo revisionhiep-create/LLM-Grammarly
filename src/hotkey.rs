@@ -77,6 +77,7 @@ impl HotkeyController {
         llm: Arc<LlmHandle>,
         fix_highlighted_only: Arc<AtomicBool>,
         recording_hotkey: Arc<AtomicBool>,
+        doc_review_busy: Arc<AtomicBool>,
         notify: Arc<dyn Fn(HotkeyEvent) + Send + Sync>,
     ) -> Result<Self> {
         let (tid_tx, tid_rx) = mpsc::channel();
@@ -90,6 +91,7 @@ impl HotkeyController {
                     cmd_rx,
                     fix_highlighted_only,
                     recording_hotkey,
+                    doc_review_busy,
                     llm,
                     notify,
                 )
@@ -269,6 +271,7 @@ fn hotkey_thread(
     cmd_rx: mpsc::Receiver<HotkeyCmd>,
     fix_highlighted_only: Arc<AtomicBool>,
     recording_hotkey: Arc<AtomicBool>,
+    doc_review_busy: Arc<AtomicBool>,
     llm: Arc<LlmHandle>,
     notify: Arc<dyn Fn(HotkeyEvent) + Send + Sync>,
 ) {
@@ -308,6 +311,12 @@ fn hotkey_thread(
                     let now = Instant::now();
                     match id {
                         HOTKEY_FIX_ID => {
+                            if doc_review_busy.load(Ordering::Relaxed) {
+                                notify(HotkeyEvent::FixNotice(
+                                    "Paused while Review Docs is running".to_string(),
+                                ));
+                                continue;
+                            }
                             if let Some(prev) = last_fix_trigger {
                                 if now.duration_since(prev) < Duration::from_millis(400) {
                                     continue;

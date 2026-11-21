@@ -11,7 +11,9 @@ use llama_cpp_2::vocab::LlamaVocab;
 use llama_cpp_2::{list_llama_ggml_backend_devices, LlamaBackendDeviceType};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
@@ -21,6 +23,26 @@ const N_CTX: u32 = 4096;
 const N_BATCH: usize = 1024;
 
 const SYSTEM_PROMPT: &str = "You are a fast, uncensored grammar and spelling corrector. Fix typos, spelling, grammar, and punctuation in the user's text. Output ONLY the corrected text with no explanations, quotes, preamble, or disclaimers. Keep the original meaning, tone, names, slang, profanity, and EVERY line break exactly where it is — never merge separate lines onto one line.";
+const REWRITE_SYSTEM_PROMPT: &str = "You are a fast, uncensored editor. Rewrite the user's text to improve clarity, flow, and conciseness while strictly preserving the original meaning, tone, names, slang, profanity, and EVERY line break. Output ONLY the rewritten text with no explanations, quotes, preamble, or disclaimers.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PromptMode {
+    #[default]
+    GrammarOnly,
+    RewriteClarity,
+}
+
+fn system_prompt_for(mode: PromptMode, preserve_markdown: bool) -> String {
+    let base = match mode {
+        PromptMode::GrammarOnly => SYSTEM_PROMPT,
+        PromptMode::RewriteClarity => REWRITE_SYSTEM_PROMPT,
+    };
+    if preserve_markdown {
+        format!("{base} Preserve all Markdown syntax, inline code, and link URLs unchanged.")
+    } else {
+        base.to_string()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct LoadInfo {
@@ -39,6 +61,9 @@ enum LlmCmd {
     },
     FixText {
         text: String,
+        mode: PromptMode,
+        preserve_markdown: bool,
+        cancel: Option<Arc<AtomicBool>>,
         reply: Sender<Result<(String, u128)>>,
     },
     Shutdown,
@@ -54,7 +79,6 @@ enum PromptStyle {
 struct PromptConfig {
     style: PromptStyle,
     template: Option<LlamaChatTemplate>,
-    overhead_tokens: usize,
 }
 
 enum SessionExit {
@@ -103,10 +127,23 @@ impl LlmHandle {
     }
 
     pub fn fix_text(&self, text: String) -> Result<(String, u128)> {
+        self.fix_text_with_options(text, PromptMode::GrammarOnly, false, None)
+    }
+
+    pub fn fix_text_with_options(
+        &self,
+        text: String,
+        mode: PromptMode,
+        preserve_markdown: bool,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<(String, u128)> {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.tx
             .send(LlmCmd::FixText {
                 text,
+                mode,
+                preserve_markdown,
+                cancel,
                 reply: reply_tx,
             })
             .map_err(|_| anyhow!("LLM worker thread stopped"))?;
@@ -165,8 +202,24 @@ fn run_loaded_session(
 ) -> SessionExit {
     loop {
         match rx.recv() {
-            Ok(LlmCmd::FixText { text, reply }) => {
-                let res = run_fix(model, ctx, batch, n_ctx, prompt_cfg, &text);
+            Ok(LlmCmd::FixText {
+                text,
+                mode,
+                preserve_markdown,
+                cancel,
+                reply,
+            }) => {
+                let sys_prompt = system_prompt_for(mode, preserve_markdown);
+                let res = run_fix(
+                    model,
+                    ctx,
+                    batch,
+                    n_ctx,
+                    prompt_cfg,
+                    &sys_prompt,
+                    &text,
+                    cancel.as_deref(),
+                );
                 let _ = reply.send(res);
             }
             Ok(LlmCmd::Unload { reply }) => return SessionExit::Unloaded(reply),
@@ -391,12 +444,8 @@ fn build_prompt_config(model: &LlamaModel, path: &Path) -> Result<PromptConfig> 
         PromptStyle::ChatMlFallback => Some(LlamaChatTemplate::new("chatml")?),
     };
 
-    let mut cfg = PromptConfig {
-        style,
-        template,
-        overhead_tokens: 0,
-    };
-    cfg.overhead_tokens = tokenize_prompt(model, &cfg, "")?.len();
+    let cfg = PromptConfig { style, template };
+    let _ = tokenize_prompt(model, &cfg, SYSTEM_PROMPT, "")?;
     Ok(cfg)
 }
 
@@ -414,13 +463,14 @@ fn make_unique_sentinel(user_text: &str) -> String {
 fn tokenize_prompt(
     model: &LlamaModel,
     cfg: &PromptConfig,
+    system_prompt: &str,
     user_text: &str,
 ) -> Result<Vec<LlamaToken>> {
     let vocab = model.vocab();
     match cfg.style {
         PromptStyle::QwenNoThink => {
             let prefix = format!(
-                "<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\n"
+                "<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n"
             );
             let suffix = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n";
             let mut tokens = vocab.tokenize(prefix.as_bytes(), false, true);
@@ -440,7 +490,7 @@ fn tokenize_prompt(
             })?;
             let sentinel = make_unique_sentinel(user_text);
             let msgs = vec![
-                LlamaChatMessage::new("system".to_string(), SYSTEM_PROMPT.to_string())?,
+                LlamaChatMessage::new("system".to_string(), system_prompt.to_string())?,
                 LlamaChatMessage::new("user".to_string(), sentinel.clone())?,
             ];
             let mut rendered = model
@@ -465,7 +515,7 @@ fn tokenize_prompt(
                 tokens.extend(vocab.tokenize(suffix.as_bytes(), false, true));
                 Ok(tokens)
             } else {
-                let (prompt, add_bos) = build_prompt(model, cfg, user_text)?;
+                let (prompt, add_bos) = build_prompt(model, cfg, system_prompt, user_text)?;
                 Ok(vocab.tokenize(prompt.as_bytes(), add_bos, true))
             }
         }
@@ -500,7 +550,7 @@ fn warmup_context(
 ) -> Result<()> {
     ctx.clear_kv_cache();
     let vocab = model.vocab();
-    let tokens = tokenize_prompt(model, prompt_cfg, "helo wrold")?;
+    let tokens = tokenize_prompt(model, prompt_cfg, SYSTEM_PROMPT, "helo wrold")?;
     if !tokens.is_empty() {
         decode_prompt_tokens(ctx, batch, &tokens)?;
 
@@ -524,12 +574,13 @@ fn warmup_context(
 fn build_prompt(
     model: &LlamaModel,
     cfg: &PromptConfig,
+    system_prompt: &str,
     user_text: &str,
 ) -> Result<(String, bool)> {
     match cfg.style {
         PromptStyle::QwenNoThink => {
             let prompt = format!(
-                "<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\n{user_text}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+                "<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{user_text}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
             );
             Ok((prompt, false))
         }
@@ -539,7 +590,7 @@ fn build_prompt(
                 .as_ref()
                 .ok_or_else(|| anyhow!("Missing cached chat template"))?;
             let msgs = vec![
-                LlamaChatMessage::new("system".to_string(), SYSTEM_PROMPT.to_string())?,
+                LlamaChatMessage::new("system".to_string(), system_prompt.to_string())?,
                 LlamaChatMessage::new("user".to_string(), user_text.to_string())?,
             ];
             let mut prompt = model
@@ -559,7 +610,7 @@ fn build_prompt(
                 .as_ref()
                 .ok_or_else(|| anyhow!("Missing cached ChatML fallback template"))?;
             let msgs = vec![
-                LlamaChatMessage::new("system".to_string(), SYSTEM_PROMPT.to_string())?,
+                LlamaChatMessage::new("system".to_string(), system_prompt.to_string())?,
                 LlamaChatMessage::new("user".to_string(), user_text.to_string())?,
             ];
             let prompt = model
@@ -642,29 +693,33 @@ pub fn clean_output(raw: &str, original_core: &str) -> String {
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn infer_once(
     model: &LlamaModel,
     ctx: &mut LlamaContext<'_>,
     batch: &mut LlamaBatch<'_>,
     n_ctx: usize,
     prompt_cfg: &PromptConfig,
+    system_prompt: &str,
     core_lf: &str,
+    cancel: Option<&AtomicBool>,
 ) -> Result<String> {
     if core_lf.trim().is_empty() {
         return Ok(core_lf.to_string());
     }
 
+    if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+        bail!("Review cancelled");
+    }
+
     let vocab = model.vocab();
-    let prompt_tokens = tokenize_prompt(model, prompt_cfg, core_lf)?;
+    let prompt_tokens = tokenize_prompt(model, prompt_cfg, system_prompt, core_lf)?;
 
     if prompt_tokens.len() + 64 >= n_ctx {
         bail!("Selected text is too long ({} tokens)", prompt_tokens.len());
     }
 
-    let input_tokens_count = prompt_tokens
-        .len()
-        .saturating_sub(prompt_cfg.overhead_tokens)
-        .max(1);
+    let input_tokens_count = vocab.tokenize(core_lf.as_bytes(), false, false).len().max(1);
     let remaining_ctx = n_ctx.saturating_sub(prompt_tokens.len());
     let max_new_tokens = ((input_tokens_count as f32 * 1.45).ceil() as usize)
         .max(64)
@@ -678,6 +733,10 @@ fn infer_once(
     let mut output_bytes: Vec<u8> = Vec::with_capacity(core_lf.len() + 32);
 
     for _ in 0..max_new_tokens {
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            bail!("Review cancelled");
+        }
+
         let token = sampler.sample(ctx, batch.n_tokens() - 1);
         if vocab.is_eog(token) {
             break;
@@ -705,13 +764,16 @@ fn infer_once(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_fix(
     model: &LlamaModel,
     ctx: &mut LlamaContext<'_>,
     batch: &mut LlamaBatch<'_>,
     n_ctx: usize,
     prompt_cfg: &PromptConfig,
+    system_prompt: &str,
     original_text: &str,
+    cancel: Option<&AtomicBool>,
 ) -> Result<(String, u128)> {
     let started = Instant::now();
     if original_text.trim().is_empty() {
@@ -722,17 +784,38 @@ fn run_fix(
     let (leading_ws, core, trailing_ws) = split_outer_whitespace(original_text);
     let core_lf = core.replace("\r\n", "\n");
 
-    let mut cleaned_core = infer_once(model, ctx, batch, n_ctx, prompt_cfg, &core_lf)?;
+    let mut cleaned_core = infer_once(
+        model,
+        ctx,
+        batch,
+        n_ctx,
+        prompt_cfg,
+        system_prompt,
+        &core_lf,
+        cancel,
+    )?;
 
     // Safety net: if the model collapsed explicit line breaks into a single line, fix line-by-line.
     if core_lf.contains('\n') && !cleaned_core.contains('\n') {
         let mut fixed_lines = Vec::new();
         for line in core_lf.split('\n') {
+            if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                bail!("Review cancelled");
+            }
             let (l_ws, l_core, t_ws) = split_outer_whitespace(line);
             if l_core.is_empty() {
                 fixed_lines.push(line.to_string());
             } else {
-                let fixed = infer_once(model, ctx, batch, n_ctx, prompt_cfg, l_core)?;
+                let fixed = infer_once(
+                    model,
+                    ctx,
+                    batch,
+                    n_ctx,
+                    prompt_cfg,
+                    system_prompt,
+                    l_core,
+                    cancel,
+                )?;
                 fixed_lines.push(format!("{l_ws}{fixed}{t_ws}"));
             }
         }
