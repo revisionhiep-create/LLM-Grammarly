@@ -1,0 +1,245 @@
+name: Build and Release macOS Universal
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Optional release tag (e.g. v1.1.0) to publish a GitHub Release'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  build-macos:
+    name: Build macOS (${{ matrix.arch }})
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            arch: arm64
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (${{ matrix.target }})
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo & CMake artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: macos -> target
+          prefix-key: macos-${{ matrix.arch }}
+
+      - name: Ensure CMake is installed
+        run: |
+          command -v cmake >/dev/null 2>&1 || brew install cmake
+
+      - name: Run unit tests (${{ matrix.target }})
+        working-directory: macos
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+          CMAKE_OSX_DEPLOYMENT_TARGET: "12.0"
+          GGML_METAL_EMBED_LIBRARY: "ON"
+          GGML_NATIVE: "OFF"
+        run: cargo test --target ${{ matrix.target }}
+
+      - name: Build release binary & iconset (${{ matrix.target }})
+        working-directory: macos
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+          CMAKE_OSX_DEPLOYMENT_TARGET: "12.0"
+          GGML_METAL_EMBED_LIBRARY: "ON"
+          GGML_NATIVE: "OFF"
+          MACOS_ICONSET_DIR: ${{ runner.temp }}/AppIcon.iconset
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Verify self-containment (no non-system dylibs)
+        run: |
+          BIN="macos/target/${{ matrix.target }}/release/LLM-Grammarly"
+          echo "=== Dynamic library dependencies for $BIN ==="
+          otool -L "$BIN"
+          NON_SYS=$(otool -L "$BIN" | tail -n +2 | awk '{print $1}' | grep -vE '^(/System/Library/|/usr/lib/|@)' || true)
+          if [ -n "$NON_SYS" ]; then
+            echo "ERROR: Non-system dynamic library dependencies found:"
+            echo "$NON_SYS"
+            exit 1
+          fi
+
+      - name: Upload macOS binary (${{ matrix.arch }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-bin-${{ matrix.arch }}
+          path: macos/target/${{ matrix.target }}/release/LLM-Grammarly
+          if-no-files-found: error
+
+      - name: Upload generated AppIcon.iconset
+        if: matrix.arch == 'arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-iconset
+          path: ${{ runner.temp }}/AppIcon.iconset
+          if-no-files-found: error
+
+  package-and-release:
+    name: Package Universal .app & .dmg
+    needs: build-macos
+    runs-on: macos-15
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create Universal .app bundle, sign, smoke-test & build .dmg
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          RAW_TAG=""
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            RAW_TAG="${GITHUB_REF_NAME}"
+          elif [[ -n "${INPUT_TAG}" ]]; then
+            RAW_TAG="${INPUT_TAG}"
+          fi
+
+          if [[ -n "${RAW_TAG}" ]]; then
+            if [[ ! "${RAW_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+              echo "ERROR: Invalid release tag format: ${RAW_TAG}"
+              exit 1
+            fi
+            APP_VERSION="${RAW_TAG#v}"
+          else
+            APP_VERSION="$(grep -m1 '^version' macos/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          fi
+          echo "Packaging LLM-Grammarly.app version: $APP_VERSION"
+
+          APP_DIR="LLM-Grammarly.app"
+          rm -rf "$APP_DIR" dmg_stage "LLM-Grammarly-macOS.dmg" "dist/AppIcon.iconset"
+          mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
+
+          lipo -create \
+            "dist/macos-bin-arm64/LLM-Grammarly" \
+            "dist/macos-bin-x86_64/LLM-Grammarly" \
+            -output "$APP_DIR/Contents/MacOS/LLM-Grammarly"
+          chmod +x "$APP_DIR/Contents/MacOS/LLM-Grammarly"
+
+          echo "=== Universal binary info ==="
+          lipo -info "$APP_DIR/Contents/MacOS/LLM-Grammarly"
+          otool -L "$APP_DIR/Contents/MacOS/LLM-Grammarly"
+
+          # iconutil requires the input directory name to end with .iconset
+          mv "dist/macos-iconset" "dist/AppIcon.iconset"
+          iconutil -c icns "dist/AppIcon.iconset" -o "$APP_DIR/Contents/Resources/AppIcon.icns"
+
+          cat > "$APP_DIR/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDevelopmentRegion</key>
+              <string>en</string>
+              <key>CFBundleDisplayName</key>
+              <string>LLM Grammarly</string>
+              <key>CFBundleExecutable</key>
+              <string>LLM-Grammarly</string>
+              <key>CFBundleIconFile</key>
+              <string>AppIcon</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.revisionhiep.llm-grammarly</string>
+              <key>CFBundleInfoDictionaryVersion</key>
+              <string>6.0</string>
+              <key>CFBundleName</key>
+              <string>LLM Grammarly</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${APP_VERSION}</string>
+              <key>CFBundleVersion</key>
+              <string>${APP_VERSION}</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>12.0</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+              <key>NSSupportsAutomaticGraphicsSwitching</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+
+          codesign --force --deep --sign - "$APP_DIR"
+          codesign --verify --deep --strict "$APP_DIR"
+
+          echo "=== Smoke test signed Universal binary ==="
+          "$APP_DIR/Contents/MacOS/LLM-Grammarly" --version
+
+          mkdir -p dmg_stage
+          cp -R "$APP_DIR" dmg_stage/
+          ln -s /Applications dmg_stage/Applications
+          hdiutil create -volname "LLM Grammarly" -srcfolder dmg_stage -ov -format UDZO "LLM-Grammarly-macOS.dmg"
+          ls -lh "LLM-Grammarly-macOS.dmg"
+
+      - name: Upload LLM-Grammarly-macOS.dmg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LLM-Grammarly-macOS
+          path: LLM-Grammarly-macOS.dmg
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="${INPUT_TAG}"
+          fi
+
+          NOTES=$(cat <<'EOF'
+          ## Downloads
+
+          - **macOS (Universal — Apple Silicon & Intel, macOS 12+)**: Download **`LLM-Grammarly-macOS.dmg`**, open it, and drag **LLM-Grammarly.app** into **Applications**.
+            - *Self-contained*: Apple Metal GPU shaders (`ggml-metal`), `llama.cpp`, and the GUI are compiled directly into a single Universal `.app` bundle with no external libraries, Python, or Ollama required.
+            - *First launch (unsigned)*: If macOS says the app cannot be opened from an unidentified developer, go to **System Settings → Privacy & Security → Open Anyway** (or run `xattr -cr /Applications/LLM-Grammarly.app`).
+            - *Live Fix permission*: Grant **Accessibility** permission when prompted so **`Ctrl + Shift + G`** can copy and paste in other apps. (**Review Docs** works immediately without Accessibility.)
+          - **Windows (x64, Windows 10/11)**: Download **`LLM-Grammarly.exe`** (Vulkan GPU + automatic CPU fallback). If Windows Defender SmartScreen appears, click **More info → Run anyway**.
+          EOF
+          )
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "LLM-Grammarly-macOS.dmg" "LLM-Grammarly.exe" --clobber
+            gh release edit "$TAG" --title "LLM Grammarly $TAG" --notes "$NOTES"
+          else
+            gh release create "$TAG" "LLM-Grammarly-macOS.dmg" "LLM-Grammarly.exe" \
+              --title "LLM Grammarly $TAG" \
+              --notes "$NOTES"
+          fi

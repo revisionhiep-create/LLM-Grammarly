@@ -1,15 +1,17 @@
 # Rust build outputs
-/target/
+target/
 **/*.rs.bk
 
 # Local LLM model files and partial downloads
 *.gguf
 *.gguf.part
 
-# Compiled Windows binaries & debug symbols (track release LLM-Grammarly.exe)
+# Compiled binaries, macOS bundles & debug symbols (track release LLM-Grammarly.exe)
 *.exe
 !/LLM-Grammarly.exe
 *.pdb
+*.dmg
+*.app/
 
 # Logs & OS metadata
 *.log
