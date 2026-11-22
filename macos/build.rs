@@ -33,6 +33,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-link-lib=framework=Carbon");
     println!("cargo:rustc-link-lib=framework=ApplicationServices");
     println!("cargo:rustc-link-lib=framework=UniformTypeIdentifiers");
+    // Apple Clang emits calls to ___isPlatformVersionAtLeast for @available(...) checks
+    // (used by ggml-metal-device.m on arm64 for macOS 15 residency sets when deploying
+    // to macOS 12+). rustc invokes cc with -nodefaultlibs, which omits libclang_rt.osx.a
+    // unless -fapple-link-rtlib is passed explicitly.
+    println!("cargo:rustc-link-arg=-fapple-link-rtlib");
 
     if let Ok(iconset_dir_str) = env::var("MACOS_ICONSET_DIR") {
         let iconset_dir = PathBuf::from(iconset_dir_str);
