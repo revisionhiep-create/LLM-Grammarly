@@ -30,9 +30,10 @@ use crate::taskbar::{
     save_document_dialog, set_window_dark_titlebar, ShellBridge, ShellCommand, TaskbarProgress,
 };
 use crate::widgets::{
-    apply_theme_visuals, card_frame, chip_button, draw_neutral_progress_bar, format_bytes,
-    format_eta, format_speed, power_switch_row, render_hotkey_row, secondary_button,
-    shorten_middle, theme_switch, toggle_switch_row, HotkeyRowAction, ThemeColors,
+    apply_theme_visuals, card_frame, chip_button, draw_neutral_progress_bar, font_regular,
+    font_semibold, format_bytes, format_eta, format_speed, heading_with_subtitle, install_fonts,
+    power_switch_row, render_hotkey_row, secondary_button, shorten_middle, text_bold,
+    text_regular, text_semibold, theme_switch, toggle_switch_row, HotkeyRowAction, ThemeColors,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -307,6 +308,7 @@ impl KeyboardLlmApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let config = load_config();
         let dark_mode = config.dark_mode;
+        install_fonts(&cc.egui_ctx);
         apply_theme_visuals(&cc.egui_ctx, dark_mode);
 
         let initial_window = config.window;
@@ -1136,26 +1138,27 @@ impl KeyboardLlmApp {
                     ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
 
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Document Review (.txt, .md, .docx)")
-                                .size(12.5)
-                                .strong()
-                                .color(theme.text_primary),
-                        );
+                        ui.label(heading_with_subtitle(
+                            "Document Review",
+                            "(.txt, .md, .docx)",
+                            15.0,
+                            12.0,
+                            theme,
+                        ));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let picking = self.doc_state.picking_doc.load(Ordering::Relaxed);
                             if ui
                                 .add_enabled(
                                     !running && !picking,
-                                    egui::Button::new(
-                                        egui::RichText::new("Browse File...")
-                                            .size(11.5)
-                                            .color(theme.text_primary),
-                                    )
+                                    egui::Button::new(text_semibold(
+                                        "Browse File...",
+                                        12.5,
+                                        theme.text_primary,
+                                    ))
                                     .fill(theme.btn_sec_bg)
                                     .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
                                     .corner_radius(egui::CornerRadius::same(6))
-                                    .min_size(egui::vec2(92.0, 26.0)),
+                                    .min_size(egui::vec2(100.0, 28.0)),
                                 )
                                 .clicked()
                             {
@@ -1204,50 +1207,51 @@ impl KeyboardLlmApp {
                                     .and_then(|s| s.to_str())
                                     .unwrap_or("document");
                                 ui.horizontal(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(shorten_middle(fname, 36))
-                                            .size(12.5)
-                                            .strong()
-                                            .color(theme.text_primary),
-                                    )
+                                    ui.label(text_semibold(
+                                        shorten_middle(fname, 36),
+                                        13.5,
+                                        theme.text_primary,
+                                    ))
                                     .on_hover_text(doc.path.to_string_lossy().as_ref());
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            ui.label(
-                                                egui::RichText::new(format!(
+                                            ui.label(text_regular(
+                                                format!(
                                                     "{} · {} batch{} · {} chunk{}",
                                                     doc.format.label(),
                                                     doc.batches.len(),
                                                     if doc.batches.len() == 1 { "" } else { "es" },
                                                     doc.items.len(),
                                                     if doc.items.len() == 1 { "" } else { "s" },
-                                                ))
-                                                .size(11.0)
-                                                .color(theme.text_muted),
-                                            );
+                                                ),
+                                                11.5,
+                                                theme.text_muted,
+                                            ));
                                         },
                                     );
                                 });
                             } else {
-                                let msg = if is_hovering_drop {
-                                    "Drop .txt, .md, or .docx file to load"
+                                let drop_rt = if is_hovering_drop {
+                                    text_semibold(
+                                        "Drop .txt, .md, or .docx file to load",
+                                        12.5,
+                                        theme.text_primary,
+                                    )
                                 } else {
-                                    "Drag & drop a .txt, .md, or .docx file here — or click Browse File..."
+                                    text_regular(
+                                        "Drag & drop a .txt, .md, or .docx file here — or click Browse File...",
+                                        12.0,
+                                        theme.text_muted,
+                                    )
                                 };
-                                ui.label(
-                                    egui::RichText::new(msg).size(11.5).color(theme.text_muted),
-                                );
+                                ui.label(drop_rt);
                             }
                         });
 
                     // Prompt Mode selector
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Prompt Mode")
-                                .size(12.0)
-                                .color(theme.text_muted),
-                        );
+                        ui.label(text_semibold("Prompt Mode", 13.0, theme.text_primary));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
                             if chip_button(
@@ -1256,8 +1260,8 @@ impl KeyboardLlmApp {
                                 "Rewrite for Clarity",
                                 self.doc_state.prompt_mode == PromptMode::RewriteClarity,
                                 !running,
-                                egui::vec2(124.0, 24.0),
-                                11.5,
+                                egui::vec2(130.0, 26.0),
+                                12.0,
                             )
                             .clicked()
                             {
@@ -1269,8 +1273,8 @@ impl KeyboardLlmApp {
                                 "Spelling / Grammar Only",
                                 self.doc_state.prompt_mode == PromptMode::GrammarOnly,
                                 !running,
-                                egui::vec2(150.0, 24.0),
-                                11.5,
+                                egui::vec2(156.0, 26.0),
+                                12.0,
                             )
                             .clicked()
                             {
@@ -1281,11 +1285,7 @@ impl KeyboardLlmApp {
 
                     // Review Scope selector
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Review Scope")
-                                .size(12.0)
-                                .color(theme.text_muted),
-                        );
+                        ui.label(text_semibold("Review Scope", 13.0, theme.text_primary));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
                             if chip_button(
@@ -1294,8 +1294,8 @@ impl KeyboardLlmApp {
                                 "Fix Whole File",
                                 self.doc_state.scope == ReviewScope::WholeFile,
                                 !running,
-                                egui::vec2(104.0, 24.0),
-                                11.5,
+                                egui::vec2(108.0, 26.0),
+                                12.0,
                             )
                             .clicked()
                             {
@@ -1307,8 +1307,8 @@ impl KeyboardLlmApp {
                                 "One Batch at a Time",
                                 self.doc_state.scope == ReviewScope::OneBatch,
                                 !running,
-                                egui::vec2(138.0, 24.0),
-                                11.5,
+                                egui::vec2(144.0, 26.0),
+                                12.0,
                             )
                             .clicked()
                             {
@@ -1332,14 +1332,11 @@ impl KeyboardLlmApp {
 
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "Fixing batch {b_cur} of {b_tot} ({pct:.0}%)"
-                                ))
-                                .size(12.0)
-                                .strong()
-                                .color(theme.text_primary),
-                            );
+                            ui.label(text_semibold(
+                                format!("Fixing batch {b_cur} of {b_tot} ({pct:.0}%)"),
+                                13.5,
+                                theme.text_primary,
+                            ));
                         });
                         draw_neutral_progress_bar(ui, theme, frac, tot == 0);
                         if secondary_button(ui, theme, "Cancel", 32.0).clicked() {
@@ -1350,25 +1347,25 @@ impl KeyboardLlmApp {
                     } else if self.doc_state.pending_start_after_load.is_some() {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label(
-                                egui::RichText::new("Loading model before starting review...")
-                                    .size(12.0)
-                                    .color(theme.text_muted),
-                            );
+                            ui.label(text_regular(
+                                "Loading model before starting review...",
+                                12.0,
+                                theme.text_muted,
+                            ));
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     if ui
                                         .add(
-                                            egui::Button::new(
-                                                egui::RichText::new("Cancel")
-                                                    .size(11.5)
-                                                    .color(theme.text_primary),
-                                            )
+                                            egui::Button::new(text_semibold(
+                                                "Cancel",
+                                                11.5,
+                                                theme.text_primary,
+                                            ))
                                             .fill(theme.btn_sec_bg)
                                             .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
                                             .corner_radius(egui::CornerRadius::same(6))
-                                            .min_size(egui::vec2(64.0, 24.0)),
+                                            .min_size(egui::vec2(66.0, 25.0)),
                                         )
                                         .clicked()
                                     {
@@ -1403,16 +1400,11 @@ impl KeyboardLlmApp {
                             .with_layout(egui::Layout::top_down_justified(egui::Align::Center), |ui| {
                                 ui.add_enabled(
                                     can_start,
-                                    egui::Button::new(
-                                        egui::RichText::new(run_label)
-                                            .size(13.0)
-                                            .strong()
-                                            .color(text_col),
-                                    )
-                                    .fill(fill)
-                                    .stroke(stroke)
-                                    .corner_radius(egui::CornerRadius::same(8))
-                                    .min_size(egui::vec2(ui.available_width(), 36.0)),
+                                    egui::Button::new(text_bold(run_label, 14.0, text_col))
+                                        .fill(fill)
+                                        .stroke(stroke)
+                                        .corner_radius(egui::CornerRadius::same(8))
+                                        .min_size(egui::vec2(ui.available_width(), 38.0)),
                                 )
                                 .clicked()
                             })
@@ -1428,11 +1420,7 @@ impl KeyboardLlmApp {
                     }
 
                     if let Some(msg) = self.doc_state.notice.as_ref() {
-                        ui.label(
-                            egui::RichText::new(msg)
-                                .size(11.5)
-                                .color(theme.text_muted),
-                        );
+                        ui.label(text_regular(msg, 12.0, theme.text_muted));
                     }
 
                     if let Some(err_msg) = self.doc_state.error.clone() {
@@ -1443,11 +1431,7 @@ impl KeyboardLlmApp {
                             .inner_margin(egui::Margin::symmetric(8, 6))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(&err_msg)
-                                            .size(11.5)
-                                            .color(theme.error_text),
-                                    );
+                                    ui.label(text_semibold(&err_msg, 12.0, theme.error_text));
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
@@ -1482,50 +1466,45 @@ impl KeyboardLlmApp {
                             if ui
                                 .add_enabled(
                                     cur_batch > 0,
-                                    egui::Button::new(
-                                        egui::RichText::new("Prev")
-                                            .size(11.5)
-                                            .color(theme.text_primary),
-                                    )
+                                    egui::Button::new(text_semibold(
+                                        "Prev",
+                                        12.0,
+                                        theme.text_primary,
+                                    ))
                                     .fill(theme.btn_sec_bg)
                                     .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
                                     .corner_radius(egui::CornerRadius::same(5))
-                                    .min_size(egui::vec2(52.0, 24.0)),
+                                    .min_size(egui::vec2(54.0, 26.0)),
                                 )
                                 .clicked()
                             {
                                 self.doc_state.current_batch = cur_batch.saturating_sub(1);
                             }
 
-                            let nav_label = if batch_count == 0 {
-                                "Batch 0 of 0".to_string()
+                            if batch_count == 0 {
+                                ui.label(text_bold("Batch 0 of 0", 13.5, theme.text_primary));
                             } else {
-                                format!(
-                                    "Batch {} of {} ({} words)",
-                                    cur_batch + 1,
-                                    batch_count,
-                                    cur_batch_words
-                                )
-                            };
-                            ui.label(
-                                egui::RichText::new(nav_label)
-                                    .size(12.0)
-                                    .strong()
-                                    .color(theme.text_primary),
-                            );
+                                ui.label(heading_with_subtitle(
+                                    &format!("Batch {} of {}", cur_batch + 1, batch_count),
+                                    &format!("({cur_batch_words} words)"),
+                                    13.5,
+                                    11.5,
+                                    theme,
+                                ));
+                            }
 
                             if ui
                                 .add_enabled(
                                     cur_batch + 1 < batch_count,
-                                    egui::Button::new(
-                                        egui::RichText::new("Next")
-                                            .size(11.5)
-                                            .color(theme.text_primary),
-                                    )
+                                    egui::Button::new(text_semibold(
+                                        "Next",
+                                        12.0,
+                                        theme.text_primary,
+                                    ))
                                     .fill(theme.btn_sec_bg)
                                     .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
                                     .corner_radius(egui::CornerRadius::same(5))
-                                    .min_size(egui::vec2(52.0, 24.0)),
+                                    .min_size(egui::vec2(54.0, 26.0)),
                                 )
                                 .clicked()
                             {
@@ -1536,15 +1515,15 @@ impl KeyboardLlmApp {
                                 if ui
                                     .add_enabled(
                                         !running && batch_count > 0,
-                                        egui::Button::new(
-                                            egui::RichText::new("Accept All in Batch")
-                                                .size(11.5)
-                                                .color(theme.text_primary),
-                                        )
+                                        egui::Button::new(text_semibold(
+                                            "Accept All in Batch",
+                                            12.0,
+                                            theme.text_primary,
+                                        ))
                                         .fill(theme.btn_sec_bg)
                                         .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
                                         .corner_radius(egui::CornerRadius::same(5))
-                                        .min_size(egui::vec2(124.0, 24.0)),
+                                        .min_size(egui::vec2(130.0, 26.0)),
                                     )
                                     .clicked()
                                 {
@@ -1558,13 +1537,13 @@ impl KeyboardLlmApp {
                         // Summary & optional side-by-side toggle on wide windows
                         let allow_sbs = ui.available_width() >= 700.0;
                         ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
+                            ui.label(text_regular(
+                                format!(
                                     "{accepted} accepted · {pending_rev} pending · {flagged_pending} flagged (>±25%)"
-                                ))
-                                .size(11.0)
-                                .color(theme.text_muted),
-                            );
+                                ),
+                                11.5,
+                                theme.text_muted,
+                            ));
                             if allow_sbs {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
@@ -1575,8 +1554,8 @@ impl KeyboardLlmApp {
                                             "Side-by-side",
                                             self.doc_state.side_by_side,
                                             true,
-                                            egui::vec2(84.0, 22.0),
-                                            11.0,
+                                            egui::vec2(90.0, 24.0),
+                                            11.5,
                                         )
                                         .clicked()
                                         {
@@ -1588,8 +1567,8 @@ impl KeyboardLlmApp {
                                             "Inline",
                                             !self.doc_state.side_by_side,
                                             true,
-                                            egui::vec2(56.0, 22.0),
-                                            11.0,
+                                            egui::vec2(60.0, 24.0),
+                                            11.5,
                                         )
                                         .clicked()
                                         {
@@ -1621,12 +1600,11 @@ impl KeyboardLlmApp {
                                         ui.spacing_mut().item_spacing.y = 6.0;
 
                                         ui.horizontal(|ui| {
-                                            ui.label(
-                                                egui::RichText::new(format!("#{}", item.id + 1))
-                                                    .size(11.0)
-                                                    .strong()
-                                                    .color(theme.text_muted),
-                                            );
+                                            ui.label(text_bold(
+                                                format!("#{}", item.id + 1),
+                                                12.5,
+                                                theme.text_primary,
+                                            ));
                                             let (status_lbl, status_col) =
                                                 if item.suggested.is_some() && !item.has_change() {
                                                     ("No changes", theme.text_muted)
@@ -1647,11 +1625,7 @@ impl KeyboardLlmApp {
                                                         }
                                                     }
                                                 };
-                                            ui.label(
-                                                egui::RichText::new(status_lbl)
-                                                    .size(11.0)
-                                                    .color(status_col),
-                                            );
+                                            ui.label(text_semibold(status_lbl, 11.5, status_col));
 
                                             if let Some(pct) = item.length_delta_pct {
                                                 ui.with_layout(
@@ -1672,13 +1646,13 @@ impl KeyboardLlmApp {
                                                                 6, 2,
                                                             ))
                                                             .show(ui, |ui| {
-                                                                ui.label(
-                                                                    egui::RichText::new(format!(
+                                                                ui.label(text_semibold(
+                                                                    format!(
                                                                         "Length {pct:+.0}% — review"
-                                                                    ))
-                                                                    .size(10.5)
-                                                                    .color(theme.dot_busy),
-                                                                );
+                                                                    ),
+                                                                    11.0,
+                                                                    theme.dot_busy,
+                                                                ));
                                                             });
                                                     },
                                                 );
@@ -1686,40 +1660,40 @@ impl KeyboardLlmApp {
                                         });
 
                                         if let Some(err) = item.error.as_deref() {
-                                            ui.label(
-                                                egui::RichText::new(format!("Error: {err}"))
-                                                    .size(11.5)
-                                                    .color(theme.error_text),
-                                            );
+                                            ui.label(text_semibold(
+                                                format!("Error: {err}"),
+                                                12.0,
+                                                theme.error_text,
+                                            ));
                                         } else if item.suggested.is_some() {
                                             if !item.has_change() {
-                                                ui.label(
-                                                    egui::RichText::new("No changes suggested.")
-                                                        .size(11.0)
-                                                        .color(theme.text_muted),
-                                                );
-                                                ui.label(
-                                                    egui::RichText::new(&item.original)
-                                                        .size(12.0)
-                                                        .color(theme.text_primary),
-                                                );
+                                                ui.label(text_regular(
+                                                    "No changes suggested.",
+                                                    11.5,
+                                                    theme.text_muted,
+                                                ));
+                                                ui.label(text_regular(
+                                                    &item.original,
+                                                    13.0,
+                                                    theme.text_primary,
+                                                ));
                                             } else {
                                                 let ops = &item.diff_ops;
                                                 if allow_sbs && self.doc_state.side_by_side {
                                                     let (orig_job, sug_job) =
                                                         build_side_diff_jobs(&ops, theme);
                                                     ui.columns(2, |cols| {
-                                                        cols[0].label(
-                                                            egui::RichText::new("Original")
-                                                                .size(10.5)
-                                                                .color(theme.text_muted),
-                                                        );
+                                                        cols[0].label(text_semibold(
+                                                            "Original",
+                                                            11.5,
+                                                            theme.text_muted,
+                                                        ));
                                                         cols[0].label(orig_job);
-                                                        cols[1].label(
-                                                            egui::RichText::new("Suggested")
-                                                                .size(10.5)
-                                                                .color(theme.text_muted),
-                                                        );
+                                                        cols[1].label(text_semibold(
+                                                            "Suggested",
+                                                            11.5,
+                                                            theme.text_muted,
+                                                        ));
                                                         cols[1].label(sug_job);
                                                     });
                                                 } else {
@@ -1735,8 +1709,8 @@ impl KeyboardLlmApp {
                                                         "Accept",
                                                         item.decision == ReviewDecision::Accepted,
                                                         !running,
-                                                        egui::vec2(66.0, 22.0),
-                                                        11.0,
+                                                        egui::vec2(68.0, 24.0),
+                                                        11.5,
                                                     )
                                                     .clicked()
                                                     {
@@ -1751,8 +1725,8 @@ impl KeyboardLlmApp {
                                                         "Reject",
                                                         item.decision == ReviewDecision::Rejected,
                                                         !running,
-                                                        egui::vec2(62.0, 22.0),
-                                                        11.0,
+                                                        egui::vec2(64.0, 24.0),
+                                                        11.5,
                                                     )
                                                     .clicked()
                                                     {
@@ -1764,11 +1738,11 @@ impl KeyboardLlmApp {
                                                 });
                                             }
                                         } else {
-                                            ui.label(
-                                                egui::RichText::new(&item.original)
-                                                    .size(12.0)
-                                                    .color(theme.text_muted),
-                                            );
+                                            ui.label(text_regular(
+                                                &item.original,
+                                                13.0,
+                                                theme.text_muted,
+                                            ));
                                         }
                                     });
                             }
@@ -1786,16 +1760,15 @@ impl KeyboardLlmApp {
                             if ui
                                 .add_enabled(
                                     !running && accepted > 0,
-                                    egui::Button::new(
-                                        egui::RichText::new("Save (with Backup)")
-                                            .size(12.0)
-                                            .strong()
-                                            .color(theme.text_primary),
-                                    )
+                                    egui::Button::new(text_bold(
+                                        "Save (with Backup)",
+                                        12.5,
+                                        theme.text_primary,
+                                    ))
                                     .fill(theme.btn_sec_bg)
                                     .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
                                     .corner_radius(egui::CornerRadius::same(6))
-                                    .min_size(egui::vec2(142.0, 28.0)),
+                                    .min_size(egui::vec2(148.0, 30.0)),
                                 )
                                 .clicked()
                             {
@@ -1806,15 +1779,15 @@ impl KeyboardLlmApp {
                             if ui
                                 .add_enabled(
                                     !running && !saving_as,
-                                    egui::Button::new(
-                                        egui::RichText::new("Save As...")
-                                            .size(12.0)
-                                            .color(theme.text_primary),
-                                    )
+                                    egui::Button::new(text_semibold(
+                                        "Save As...",
+                                        12.5,
+                                        theme.text_primary,
+                                    ))
                                     .fill(theme.btn_sec_bg)
                                     .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
                                     .corner_radius(egui::CornerRadius::same(6))
-                                    .min_size(egui::vec2(86.0, 28.0)),
+                                    .min_size(egui::vec2(90.0, 30.0)),
                                 )
                                 .clicked()
                             {
@@ -1872,34 +1845,29 @@ impl KeyboardLlmApp {
                         };
                         if ui
                             .add(
-                                egui::Button::new(
-                                    egui::RichText::new(arrow)
-                                        .size(12.5)
-                                        .strong()
-                                        .color(theme.text_primary),
-                                )
-                                .frame(false),
+                                egui::Button::new(text_bold(arrow, 15.0, theme.text_primary))
+                                    .frame(false),
                             )
                             .clicked()
                         {
                             self.doc_state.backup_open = !self.doc_state.backup_open;
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
+                            ui.label(text_regular(
+                                format!(
                                     "Keep {} · {folder_tag}",
                                     self.config.backup_keep_count
-                                ))
-                                .size(11.0)
-                                .color(theme.text_muted),
-                            );
+                                ),
+                                11.5,
+                                theme.text_muted,
+                            ));
                         });
                     });
 
                     if self.doc_state.backup_open {
                         let is_custom_backup = self.config.backup_dir.is_some();
                         ui.horizontal(|ui| {
-                            let btn_space = if is_custom_backup { 156.0 } else { 96.0 };
+                            let btn_space = if is_custom_backup { 162.0 } else { 100.0 };
                             let edit_w = (ui.available_width() - btn_space).max(120.0);
                             let dir_resp = ui.add_enabled(
                                 !running,
@@ -1933,15 +1901,15 @@ impl KeyboardLlmApp {
                             if ui
                                 .add_enabled(
                                     !running && !browsing,
-                                    egui::Button::new(
-                                        egui::RichText::new("Browse...")
-                                            .size(11.5)
-                                            .color(theme.text_primary),
-                                    )
+                                    egui::Button::new(text_semibold(
+                                        "Browse...",
+                                        12.0,
+                                        theme.text_primary,
+                                    ))
                                     .fill(theme.btn_sec_bg)
                                     .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
                                     .corner_radius(egui::CornerRadius::same(6))
-                                    .min_size(egui::vec2(74.0, 26.0)),
+                                    .min_size(egui::vec2(78.0, 27.0)),
                                 )
                                 .clicked()
                             {
@@ -1968,15 +1936,15 @@ impl KeyboardLlmApp {
                                 && ui
                                     .add_enabled(
                                         !running,
-                                        egui::Button::new(
-                                            egui::RichText::new("Reset")
-                                                .size(11.5)
-                                                .color(theme.text_muted),
-                                        )
+                                        egui::Button::new(text_regular(
+                                            "Reset",
+                                            11.5,
+                                            theme.text_muted,
+                                        ))
                                         .fill(egui::Color32::TRANSPARENT)
                                         .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
                                         .corner_radius(egui::CornerRadius::same(6))
-                                        .min_size(egui::vec2(52.0, 26.0)),
+                                        .min_size(egui::vec2(54.0, 27.0)),
                                     )
                                     .clicked()
                             {
@@ -1993,25 +1961,25 @@ impl KeyboardLlmApp {
                         });
 
                         ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("Keep last backups")
-                                    .size(12.0)
-                                    .color(theme.text_muted),
-                            );
+                            ui.label(text_semibold(
+                                "Keep last backups",
+                                13.0,
+                                theme.text_primary,
+                            ));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 ui.spacing_mut().item_spacing.x = 6.0;
                                 if ui
                                     .add_enabled(
                                         !running && self.config.backup_keep_count < 500,
-                                        egui::Button::new(
-                                            egui::RichText::new("+")
-                                                .size(12.0)
-                                                .color(theme.text_primary),
-                                        )
+                                        egui::Button::new(text_bold(
+                                            "+",
+                                            13.0,
+                                            theme.text_primary,
+                                        ))
                                         .fill(theme.btn_sec_bg)
                                         .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
                                         .corner_radius(egui::CornerRadius::same(5))
-                                        .min_size(egui::vec2(26.0, 22.0)),
+                                        .min_size(egui::vec2(28.0, 24.0)),
                                     )
                                     .clicked()
                                 {
@@ -2020,28 +1988,24 @@ impl KeyboardLlmApp {
                                     self.save_current_config();
                                 }
 
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "{}",
-                                        self.config.backup_keep_count
-                                    ))
-                                    .size(12.0)
-                                    .strong()
-                                    .color(theme.text_primary),
-                                );
+                                ui.label(text_bold(
+                                    format!("{}", self.config.backup_keep_count),
+                                    13.0,
+                                    theme.text_primary,
+                                ));
 
                                 if ui
                                     .add_enabled(
                                         !running && self.config.backup_keep_count > 1,
-                                        egui::Button::new(
-                                            egui::RichText::new("-")
-                                                .size(12.0)
-                                                .color(theme.text_primary),
-                                        )
+                                        egui::Button::new(text_bold(
+                                            "-",
+                                            13.0,
+                                            theme.text_primary,
+                                        ))
                                         .fill(theme.btn_sec_bg)
                                         .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
                                         .corner_radius(egui::CornerRadius::same(5))
-                                        .min_size(egui::vec2(26.0, 22.0)),
+                                        .min_size(egui::vec2(28.0, 24.0)),
                                     )
                                     .clicked()
                                 {
@@ -2059,7 +2023,8 @@ impl KeyboardLlmApp {
 
 fn build_inline_diff_job(ops: &[DiffOp], theme: &ThemeColors) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
-    let font = egui::FontId::proportional(12.0);
+    let font_reg = font_regular(13.0);
+    let font_ins = font_semibold(13.0);
     for op in ops {
         match op {
             DiffOp::Equal(s) => {
@@ -2067,7 +2032,7 @@ fn build_inline_diff_job(ops: &[DiffOp], theme: &ThemeColors) -> egui::text::Lay
                     s,
                     0.0,
                     egui::TextFormat {
-                        font_id: font.clone(),
+                        font_id: font_reg.clone(),
                         color: theme.text_primary,
                         ..Default::default()
                     },
@@ -2078,7 +2043,7 @@ fn build_inline_diff_job(ops: &[DiffOp], theme: &ThemeColors) -> egui::text::Lay
                     s,
                     0.0,
                     egui::TextFormat {
-                        font_id: font.clone(),
+                        font_id: font_reg.clone(),
                         color: theme.error_text,
                         background: theme.error_bg,
                         strikethrough: egui::Stroke::new(1.0_f32, theme.error_text),
@@ -2091,7 +2056,7 @@ fn build_inline_diff_job(ops: &[DiffOp], theme: &ThemeColors) -> egui::text::Lay
                     s,
                     0.0,
                     egui::TextFormat {
-                        font_id: font.clone(),
+                        font_id: font_ins.clone(),
                         color: theme.dot_ready,
                         background: theme.bg_keycap,
                         ..Default::default()
@@ -2109,12 +2074,13 @@ fn build_side_diff_jobs(
 ) -> (egui::text::LayoutJob, egui::text::LayoutJob) {
     let mut orig = egui::text::LayoutJob::default();
     let mut sug = egui::text::LayoutJob::default();
-    let font = egui::FontId::proportional(12.0);
+    let font_reg = font_regular(13.0);
+    let font_ins = font_semibold(13.0);
     for op in ops {
         match op {
             DiffOp::Equal(s) => {
                 let fmt = egui::TextFormat {
-                    font_id: font.clone(),
+                    font_id: font_reg.clone(),
                     color: theme.text_primary,
                     ..Default::default()
                 };
@@ -2126,7 +2092,7 @@ fn build_side_diff_jobs(
                     s,
                     0.0,
                     egui::TextFormat {
-                        font_id: font.clone(),
+                        font_id: font_reg.clone(),
                         color: theme.error_text,
                         background: theme.error_bg,
                         strikethrough: egui::Stroke::new(1.0_f32, theme.error_text),
@@ -2139,7 +2105,7 @@ fn build_side_diff_jobs(
                     s,
                     0.0,
                     egui::TextFormat {
-                        font_id: font.clone(),
+                        font_id: font_ins.clone(),
                         color: theme.dot_ready,
                         background: theme.bg_keycap,
                         ..Default::default()
@@ -2295,13 +2261,8 @@ impl eframe::App for KeyboardLlmApp {
                         &self.icon_tex_off
                     };
                     ui.image((tex.id(), egui::vec2(26.0, 26.0)));
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new("LLM Grammarly")
-                            .size(17.5)
-                            .strong()
-                            .color(theme.text_primary),
-                    );
+                    ui.add_space(5.0);
+                    ui.label(text_bold("LLM Grammarly", 20.0, theme.text_primary));
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let (dot_color, status_text): (egui::Color32, String) = match &phase {
@@ -2338,11 +2299,7 @@ impl eframe::App for KeyboardLlmApp {
                                         egui::Sense::hover(),
                                     );
                                     ui.painter().circle_filled(rect.center(), 4.0, dot_color);
-                                    ui.label(
-                                        egui::RichText::new(status_text)
-                                            .size(12.0)
-                                            .color(theme.text_primary),
-                                    );
+                                    ui.label(text_semibold(status_text, 12.5, theme.text_primary));
                                 });
                             });
 
@@ -2366,8 +2323,8 @@ impl eframe::App for KeyboardLlmApp {
                         "Live Fix",
                         self.active_tab == ActiveTab::LiveFix,
                         true,
-                        egui::vec2(86.0, 26.0),
-                        12.0,
+                        egui::vec2(92.0, 28.0),
+                        13.0,
                     )
                     .clicked()
                     {
@@ -2379,8 +2336,8 @@ impl eframe::App for KeyboardLlmApp {
                         "Review Docs",
                         self.active_tab == ActiveTab::ReviewDocs,
                         true,
-                        egui::vec2(104.0, 26.0),
-                        12.0,
+                        egui::vec2(112.0, 28.0),
+                        13.0,
                     )
                     .clicked()
                     {
@@ -2411,12 +2368,7 @@ impl eframe::App for KeyboardLlmApp {
                                         } else {
                                             "No model downloaded yet".to_string()
                                         };
-                                        ui.label(
-                                            egui::RichText::new(title)
-                                                .size(12.5)
-                                                .strong()
-                                                .color(theme.text_primary),
-                                        );
+                                        ui.label(text_bold(title, 14.5, theme.text_primary));
                                         let desc = if let Some(preset) =
                                             preset_for_url(normalized_preview.as_deref())
                                         {
@@ -2428,11 +2380,7 @@ impl eframe::App for KeyboardLlmApp {
                                             "Click below to download the selected GGUF model from Hugging Face to your storage folder."
                                                 .to_string()
                                         };
-                                        ui.label(
-                                            egui::RichText::new(desc)
-                                                .size(11.5)
-                                                .color(theme.text_muted),
-                                        );
+                                        ui.label(text_regular(desc, 12.0, theme.text_muted));
                                     });
                             }
 
@@ -2471,11 +2419,11 @@ impl eframe::App for KeyboardLlmApp {
                                             |ui| {
                                                 if ui
                                                     .add(
-                                                        egui::Button::new(
-                                                            egui::RichText::new("Discard partial file")
-                                                                .size(11.0)
-                                                                .color(theme.text_muted),
-                                                        )
+                                                        egui::Button::new(text_regular(
+                                                            "Discard partial file",
+                                                            11.5,
+                                                            theme.text_muted,
+                                                        ))
                                                         .frame(false),
                                                     )
                                                     .clicked()
@@ -2513,24 +2461,18 @@ impl eframe::App for KeyboardLlmApp {
                                         } else {
                                             "Downloading model from Hugging Face..."
                                         };
-                                        ui.label(
-                                            egui::RichText::new(heading)
-                                                .size(12.5)
-                                                .strong()
-                                                .color(theme.text_primary),
-                                        );
+                                        ui.label(text_bold(heading, 14.0, theme.text_primary));
                                         if let Some(tot) = total.filter(|&t| t > 0) {
                                             let pct = ((*downloaded as f64 / tot as f64) * 100.0)
                                                 .clamp(0.0, 100.0);
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
-                                                    ui.label(
-                                                        egui::RichText::new(format!("{pct:.0}%"))
-                                                            .size(12.5)
-                                                            .strong()
-                                                            .color(theme.text_primary),
-                                                    );
+                                                    ui.label(text_bold(
+                                                        format!("{pct:.0}%"),
+                                                        14.0,
+                                                        theme.text_primary,
+                                                    ));
                                                 },
                                             );
                                         }
@@ -2559,18 +2501,14 @@ impl eframe::App for KeyboardLlmApp {
                                     if let Some(eta) = format_eta(*downloaded, *total, *speed_bps) {
                                         stats.push_str(&format!("  ·  {eta}"));
                                     }
-                                    ui.label(
-                                        egui::RichText::new(stats)
-                                            .size(11.5)
-                                            .color(theme.text_primary),
-                                    );
+                                    ui.label(text_semibold(stats, 12.0, theme.text_primary));
 
                                     let dest_short = shorten_middle(dest_display, 58);
-                                    ui.label(
-                                        egui::RichText::new(format!("Saving to: {dest_short}"))
-                                            .size(11.0)
-                                            .color(theme.text_muted),
-                                    )
+                                    ui.label(text_regular(
+                                        format!("Saving to: {dest_short}"),
+                                        11.5,
+                                        theme.text_muted,
+                                    ))
                                     .on_hover_text(dest_display);
                                 });
 
@@ -2734,28 +2672,20 @@ impl eframe::App for KeyboardLlmApp {
                     }
 
                     if let Some(hint) = &self.hotkey_hint {
-                        ui.label(egui::RichText::new(hint).size(11.0).color(theme.dot_busy));
+                        ui.label(text_semibold(hint, 11.5, theme.dot_busy));
                     }
 
                     // Status notice line
                     if matches!(phase, AppPhase::Fixing { .. }) {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label(
-                                egui::RichText::new(&notice)
-                                    .size(11.5)
-                                    .color(theme.text_muted),
-                            );
+                            ui.label(text_regular(&notice, 11.5, theme.text_muted));
                         });
                     } else if !matches!(
                         phase,
                         AppPhase::Downloading { .. } | AppPhase::Loading | AppPhase::Unloading
                     ) {
-                        ui.label(
-                            egui::RichText::new(&notice)
-                                .size(11.5)
-                                .color(theme.text_muted),
-                        );
+                        ui.label(text_regular(&notice, 11.5, theme.text_muted));
                     }
 
                     if let Some(err_msg) = error {
@@ -2766,11 +2696,7 @@ impl eframe::App for KeyboardLlmApp {
                             .inner_margin(egui::Margin::symmetric(8, 6))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(&err_msg)
-                                            .size(11.5)
-                                            .color(theme.error_text),
-                                    );
+                                    ui.label(text_semibold(&err_msg, 12.0, theme.error_text));
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
@@ -2796,12 +2722,13 @@ impl eframe::App for KeyboardLlmApp {
                     );
 
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Model Download Link (Hugging Face GGUF)")
-                                .size(12.5)
-                                .strong()
-                                .color(theme.text_primary),
-                        );
+                        ui.label(heading_with_subtitle(
+                            "Model Download Link",
+                            "(Hugging Face GGUF)",
+                            15.0,
+                            12.0,
+                            &theme,
+                        ));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let cache_label = match cached_size {
                                 Some(sz) => format!("Cached · {}", format_bytes(sz)),
@@ -2810,11 +2737,7 @@ impl eframe::App for KeyboardLlmApp {
                                 }
                                 None => "Not downloaded".to_string(),
                             };
-                            ui.label(
-                                egui::RichText::new(cache_label)
-                                    .size(11.5)
-                                    .color(theme.text_muted),
-                            );
+                            ui.label(text_regular(cache_label, 11.5, theme.text_muted));
                         });
                     });
 
@@ -2837,11 +2760,11 @@ impl eframe::App for KeyboardLlmApp {
                     }
 
                     if let Some(norm) = normalized_preview.as_deref() {
-                        ui.label(
-                            egui::RichText::new(format!("File: {}", display_model_name(norm)))
-                                .size(11.0)
-                                .color(theme.text_muted),
-                        );
+                        ui.label(text_regular(
+                            format!("File: {}", display_model_name(norm)),
+                            11.5,
+                            theme.text_muted,
+                        ));
                     }
 
                     ui.horizontal(|ui| {
@@ -2873,15 +2796,15 @@ impl eframe::App for KeyboardLlmApp {
                         if ui
                             .add_enabled(
                                 can_click_dl,
-                                egui::Button::new(
-                                    egui::RichText::new(dl_label)
-                                        .size(12.0)
-                                        .color(theme.text_primary),
-                                )
+                                egui::Button::new(text_semibold(
+                                    dl_label,
+                                    12.5,
+                                    theme.text_primary,
+                                ))
                                 .fill(theme.btn_sec_bg)
                                 .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
                                 .corner_radius(egui::CornerRadius::same(6))
-                                .min_size(egui::vec2(126.0, 27.0)),
+                                .min_size(egui::vec2(130.0, 28.0)),
                             )
                             .clicked()
                         {
@@ -2910,8 +2833,8 @@ impl eframe::App for KeyboardLlmApp {
                                 preset.label,
                                 is_selected,
                                 !is_downloading,
-                                egui::vec2(preset.min_width, 27.0),
-                                12.0,
+                                egui::vec2(preset.min_width, 28.0),
+                                12.5,
                             )
                             .on_hover_text(preset.tooltip)
                             .clicked()
@@ -2924,11 +2847,7 @@ impl eframe::App for KeyboardLlmApp {
                     });
 
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Compute")
-                                .size(12.0)
-                                .color(theme.text_muted),
-                        );
+                        ui.label(text_semibold("Compute", 13.0, theme.text_primary));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
                             let can_change_compute = !is_downloading && !is_busy_loading;
@@ -2939,8 +2858,8 @@ impl eframe::App for KeyboardLlmApp {
                                 "CPU Only",
                                 self.config.compute_mode == ComputeMode::Cpu,
                                 can_change_compute,
-                                egui::vec2(74.0, 24.0),
-                                11.5,
+                                egui::vec2(78.0, 26.0),
+                                12.0,
                             )
                             .on_hover_text(
                                 "Run inference strictly on CPU (avoids Vulkan/iGPU driver overhead)",
@@ -2959,8 +2878,8 @@ impl eframe::App for KeyboardLlmApp {
                                 "Auto",
                                 self.config.compute_mode == ComputeMode::Auto,
                                 can_change_compute,
-                                egui::vec2(56.0, 24.0),
-                                11.5,
+                                egui::vec2(60.0, 26.0),
+                                12.0,
                             )
                             .on_hover_text("Use Vulkan GPU if available with automatic CPU fallback")
                             .clicked()
@@ -2980,24 +2899,19 @@ impl eframe::App for KeyboardLlmApp {
                     // Model Storage Folder selector
                     let is_custom_dir = self.config.model_dir.is_some();
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Model Storage Folder")
-                                .size(12.5)
-                                .strong()
-                                .color(theme.text_primary),
-                        );
+                        ui.label(text_bold("Model Storage Folder", 15.0, theme.text_primary));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let tag = if is_custom_dir {
                                 "Custom folder"
                             } else {
                                 "App folder (.exe)"
                             };
-                            ui.label(egui::RichText::new(tag).size(11.0).color(theme.text_muted));
+                            ui.label(text_regular(tag, 11.5, theme.text_muted));
                         });
                     });
 
                     ui.horizontal(|ui| {
-                        let btn_space = if is_custom_dir { 156.0 } else { 96.0 };
+                        let btn_space = if is_custom_dir { 162.0 } else { 100.0 };
                         let edit_w = (ui.available_width() - btn_space).max(120.0);
                         let dir_resp = ui.add_enabled(
                             !is_downloading,
@@ -3024,15 +2938,15 @@ impl eframe::App for KeyboardLlmApp {
                         if ui
                             .add_enabled(
                                 !is_downloading && !browsing,
-                                egui::Button::new(
-                                    egui::RichText::new("Browse...")
-                                        .size(11.5)
-                                        .color(theme.text_primary),
-                                )
+                                egui::Button::new(text_semibold(
+                                    "Browse...",
+                                    12.0,
+                                    theme.text_primary,
+                                ))
                                 .fill(theme.btn_sec_bg)
                                 .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
                                 .corner_radius(egui::CornerRadius::same(6))
-                                .min_size(egui::vec2(74.0, 26.0)),
+                                .min_size(egui::vec2(78.0, 27.0)),
                             )
                             .clicked()
                         {
@@ -3057,15 +2971,15 @@ impl eframe::App for KeyboardLlmApp {
                             && ui
                                 .add_enabled(
                                     !is_downloading,
-                                    egui::Button::new(
-                                        egui::RichText::new("Reset")
-                                            .size(11.5)
-                                            .color(theme.text_muted),
-                                    )
+                                    egui::Button::new(text_regular(
+                                        "Reset",
+                                        11.5,
+                                        theme.text_muted,
+                                    ))
                                     .fill(egui::Color32::TRANSPARENT)
                                     .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
                                     .corner_radius(egui::CornerRadius::same(6))
-                                    .min_size(egui::vec2(52.0, 26.0)),
+                                    .min_size(egui::vec2(54.0, 27.0)),
                                 )
                                 .clicked()
                         {
@@ -3080,9 +2994,7 @@ impl eframe::App for KeyboardLlmApp {
                         if ui
                             .checkbox(
                                 &mut self.config.minimize_to_tray_on_close,
-                                egui::RichText::new("Minimize to tray on close")
-                                    .size(11.5)
-                                    .color(theme.text_muted),
+                                text_regular("Minimize to tray on close", 12.0, theme.text_muted),
                             )
                             .changed()
                         {
@@ -3094,9 +3006,7 @@ impl eframe::App for KeyboardLlmApp {
                         if ui
                             .checkbox(
                                 &mut self.config.show_notifications,
-                                egui::RichText::new("Notifications")
-                                    .size(11.5)
-                                    .color(theme.text_muted),
+                                text_regular("Notifications", 12.0, theme.text_muted),
                             )
                             .on_hover_text(
                                 "Show silent Windows notifications when On/Off or Highlight mode changes",
@@ -3111,11 +3021,11 @@ impl eframe::App for KeyboardLlmApp {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
                                 .add(
-                                    egui::Button::new(
-                                        egui::RichText::new("Hide to Tray")
-                                            .size(11.5)
-                                            .color(theme.text_muted),
-                                    )
+                                    egui::Button::new(text_semibold(
+                                        "Hide to Tray",
+                                        12.0,
+                                        theme.text_muted,
+                                    ))
                                     .frame(false),
                                 )
                                 .clicked()

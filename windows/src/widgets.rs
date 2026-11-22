@@ -1,4 +1,177 @@
 use eframe::egui;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
+
+fn family_semibold() -> egui::FontFamily {
+    static FAM: OnceLock<egui::FontFamily> = OnceLock::new();
+    FAM.get_or_init(|| egui::FontFamily::Name(Arc::from("semibold")))
+        .clone()
+}
+
+fn family_bold() -> egui::FontFamily {
+    static FAM: OnceLock<egui::FontFamily> = OnceLock::new();
+    FAM.get_or_init(|| egui::FontFamily::Name(Arc::from("bold")))
+        .clone()
+}
+
+pub fn font_regular(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Proportional)
+}
+
+pub fn font_semibold(size: f32) -> egui::FontId {
+    egui::FontId::new(size, family_semibold())
+}
+
+pub fn font_bold(size: f32) -> egui::FontId {
+    egui::FontId::new(size, family_bold())
+}
+
+pub fn text_regular(text: impl Into<String>, size: f32, color: egui::Color32) -> egui::RichText {
+    egui::RichText::new(text).font(font_regular(size)).color(color)
+}
+
+pub fn text_semibold(text: impl Into<String>, size: f32, color: egui::Color32) -> egui::RichText {
+    egui::RichText::new(text).font(font_semibold(size)).color(color)
+}
+
+pub fn text_bold(text: impl Into<String>, size: f32, color: egui::Color32) -> egui::RichText {
+    egui::RichText::new(text).font(font_bold(size)).color(color)
+}
+
+pub fn heading_with_subtitle(
+    title: &str,
+    subtitle: &str,
+    title_size: f32,
+    subtitle_size: f32,
+    theme: &ThemeColors,
+) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        title,
+        0.0,
+        egui::TextFormat {
+            font_id: font_bold(title_size),
+            color: theme.text_primary,
+            ..Default::default()
+        },
+    );
+    if !subtitle.is_empty() {
+        job.append(
+            " ",
+            0.0,
+            egui::TextFormat {
+                font_id: font_regular(subtitle_size),
+                color: theme.text_muted,
+                ..Default::default()
+            },
+        );
+        job.append(
+            subtitle,
+            0.0,
+            egui::TextFormat {
+                font_id: font_regular(subtitle_size),
+                color: theme.text_muted,
+                ..Default::default()
+            },
+        );
+    }
+    job
+}
+
+fn load_sfnt_font(path: &Path, tweak: egui::FontTweak) -> Option<Arc<egui::FontData>> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() < 12 {
+        return None;
+    }
+    let valid_magic = matches!(
+        &bytes[0..4],
+        [0x00, 0x01, 0x00, 0x00] | b"OTTO" | b"true"
+    );
+    if !valid_magic {
+        return None;
+    }
+    Some(Arc::new(egui::FontData::from_owned(bytes).tweak(tweak)))
+}
+
+pub fn install_fonts(ctx: &egui::Context) {
+    // Segoe UI's unscaled hhea ascent - descent is ~1.330 * upm vs Ubuntu-Light's ~1.121 * upm;
+    // scaling by 1.15 restores clean optical cap-height while keeping Latin ink inside the row box.
+    const SEGOE_TWEAK: egui::FontTweak = egui::FontTweak {
+        scale: 1.15,
+        y_offset_factor: -0.06,
+        y_offset: 0.0,
+        baseline_offset_factor: 0.0,
+    };
+
+    let fonts_dir = std::env::var_os("WINDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+        .join("Fonts");
+
+    let mut fonts = egui::FontDefinitions::default();
+    let default_fallbacks = fonts
+        .families
+        .get(&egui::FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+
+    let reg_id = load_sfnt_font(&fonts_dir.join("segoeui.ttf"), SEGOE_TWEAK).map(|data| {
+        let name = "ui_regular".to_string();
+        fonts.font_data.insert(name.clone(), data);
+        name
+    });
+    let sb_id = load_sfnt_font(&fonts_dir.join("seguisb.ttf"), SEGOE_TWEAK).map(|data| {
+        let name = "ui_semibold".to_string();
+        fonts.font_data.insert(name.clone(), data);
+        name
+    });
+    let bold_id = load_sfnt_font(&fonts_dir.join("segoeuib.ttf"), SEGOE_TWEAK).map(|data| {
+        let name = "ui_bold".to_string();
+        fonts.font_data.insert(name.clone(), data);
+        name
+    });
+
+    let mut prop_list = Vec::new();
+    if let Some(id) = &reg_id {
+        prop_list.push(id.clone());
+    }
+    prop_list.extend(default_fallbacks.iter().cloned());
+    fonts.families.insert(egui::FontFamily::Proportional, prop_list);
+
+    let mut sb_list = Vec::new();
+    if let Some(id) = &sb_id {
+        sb_list.push(id.clone());
+    }
+    if let Some(id) = &reg_id {
+        sb_list.push(id.clone());
+    }
+    sb_list.extend(default_fallbacks.iter().cloned());
+    fonts.families.insert(family_semibold(), sb_list);
+
+    let mut bold_list = Vec::new();
+    if let Some(id) = &bold_id {
+        bold_list.push(id.clone());
+    }
+    if let Some(id) = &sb_id {
+        bold_list.push(id.clone());
+    }
+    if let Some(id) = &reg_id {
+        bold_list.push(id.clone());
+    }
+    bold_list.extend(default_fallbacks);
+    fonts.families.insert(family_bold(), bold_list);
+
+    ctx.set_fonts(fonts);
+    ctx.style_mut(|style| {
+        style.text_styles.insert(egui::TextStyle::Heading, font_bold(18.0));
+        style.text_styles.insert(egui::TextStyle::Body, font_regular(12.5));
+        style.text_styles.insert(egui::TextStyle::Button, font_semibold(12.0));
+        style.text_styles.insert(egui::TextStyle::Small, font_regular(11.5));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Monospace, egui::FontId::monospace(12.0));
+    });
+}
 
 #[derive(Clone, Copy)]
 pub struct ThemeColors {
@@ -392,32 +565,25 @@ pub fn render_hotkey_row(
             .corner_radius(egui::CornerRadius::same(5))
             .inner_margin(egui::Margin::symmetric(8, 2))
             .show(ui, |ui| {
-                let mut rt = egui::RichText::new(text).size(11.5).color(text_color);
-                if strong {
-                    rt = rt.strong();
-                }
+                let rt = if strong {
+                    text_bold(text, 12.0, text_color)
+                } else {
+                    text_regular(text, 11.5, text_color)
+                };
                 ui.label(rt);
             });
-        ui.label(
-            egui::RichText::new(description)
-                .size(12.0)
-                .color(theme.text_muted),
-        );
+        ui.label(text_regular(description, 12.5, theme.text_muted));
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if let Some(sec_lbl) = secondary_label.filter(|_| !is_recording) {
                 if ui
                     .add_enabled(
                         !is_busy,
-                        egui::Button::new(
-                            egui::RichText::new(sec_lbl)
-                                .size(11.0)
-                                .color(theme.text_muted),
-                        )
-                        .fill(egui::Color32::TRANSPARENT)
-                        .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
-                        .corner_radius(egui::CornerRadius::same(5))
-                        .min_size(egui::vec2(48.0, 22.0)),
+                        egui::Button::new(text_regular(sec_lbl, 11.5, theme.text_muted))
+                            .fill(egui::Color32::TRANSPARENT)
+                            .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
+                            .corner_radius(egui::CornerRadius::same(5))
+                            .min_size(egui::vec2(50.0, 24.0)),
                     )
                     .clicked()
                 {
@@ -435,19 +601,15 @@ pub fn render_hotkey_row(
             if ui
                 .add_enabled(
                     !is_busy,
-                    egui::Button::new(
-                        egui::RichText::new(action_label)
-                            .size(11.0)
-                            .color(theme.text_primary),
-                    )
-                    .fill(if is_recording {
-                        theme.bg_keycap
-                    } else {
-                        theme.btn_sec_bg
-                    })
-                    .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
-                    .corner_radius(egui::CornerRadius::same(5))
-                    .min_size(egui::vec2(96.0, 22.0)),
+                    egui::Button::new(text_semibold(action_label, 11.5, theme.text_primary))
+                        .fill(if is_recording {
+                            theme.bg_keycap
+                        } else {
+                            theme.btn_sec_bg
+                        })
+                        .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
+                        .corner_radius(egui::CornerRadius::same(5))
+                        .min_size(egui::vec2(102.0, 24.0)),
                 )
                 .clicked()
             {
@@ -465,6 +627,7 @@ fn switch_row_widget(
     pill_id: egui::Id,
     height: f32,
     font_size: f32,
+    bold: bool,
     label: &str,
     is_on: bool,
     enabled: bool,
@@ -520,13 +683,12 @@ fn switch_row_widget(
         theme.text_muted
     };
     let avail_text_w = (switch_rect.left() - 10.0 - text_left).max(40.0);
-    let galley = egui::WidgetText::from(
-        egui::RichText::new(label)
-            .size(font_size)
-            .strong()
-            .color(text_color),
-    )
-    .into_galley(
+    let label_rt = if bold {
+        text_bold(label, font_size, text_color)
+    } else {
+        text_semibold(label, font_size, text_color)
+    };
+    let galley = egui::WidgetText::from(label_rt).into_galley(
         ui,
         Some(egui::TextWrapMode::Truncate),
         avail_text_w,
@@ -560,8 +722,9 @@ pub fn power_switch_row(
         ui,
         theme,
         egui::Id::new("power_toggle_switch"),
-        46.0,
-        14.0,
+        48.0,
+        15.5,
+        true,
         label,
         is_on,
         enabled,
@@ -577,7 +740,18 @@ pub fn toggle_switch_row(
     is_on: bool,
     enabled: bool,
 ) -> egui::Response {
-    switch_row_widget(ui, theme, pill_id, 42.0, 13.0, label, is_on, enabled, false)
+    switch_row_widget(
+        ui,
+        theme,
+        pill_id,
+        44.0,
+        14.0,
+        false,
+        label,
+        is_on,
+        enabled,
+        false,
+    )
 }
 
 pub fn chip_button(
@@ -590,14 +764,9 @@ pub fn chip_button(
     font_size: f32,
 ) -> egui::Response {
     let text = if selected {
-        egui::RichText::new(label)
-            .size(font_size)
-            .strong()
-            .color(theme.text_primary)
+        text_bold(label, font_size, theme.text_primary)
     } else {
-        egui::RichText::new(label)
-            .size(font_size)
-            .color(theme.text_muted)
+        text_semibold(label, font_size, theme.text_muted)
     };
     let (fill, stroke_color) = if selected {
         (theme.btn_sec_bg, theme.text_muted)
@@ -621,16 +790,11 @@ pub fn secondary_button(
     height: f32,
 ) -> egui::Response {
     let w = ui.available_width();
-    let btn = egui::Button::new(
-        egui::RichText::new(text)
-            .size(14.0)
-            .strong()
-            .color(theme.text_primary),
-    )
-    .fill(theme.btn_sec_bg)
-    .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
-    .corner_radius(egui::CornerRadius::same(8))
-    .min_size(egui::vec2(w, height));
+    let btn = egui::Button::new(text_semibold(text, 13.5, theme.text_primary))
+        .fill(theme.btn_sec_bg)
+        .stroke(egui::Stroke::new(1.0_f32, theme.border_med))
+        .corner_radius(egui::CornerRadius::same(8))
+        .min_size(egui::vec2(w, height));
     ui.scope(|ui| {
         ui.visuals_mut().widgets.hovered.bg_fill = theme.btn_sec_hover;
         ui.visuals_mut().widgets.active.bg_fill = theme.btn_sec_bg;
@@ -663,4 +827,49 @@ pub fn apply_theme_visuals(ctx: &egui::Context, dark_mode: bool) {
     v.selection.bg_fill = theme.selection_bg;
     v.selection.stroke = egui::Stroke::new(1.0_f32, theme.accent_fill);
     ctx.set_visuals(v);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_fonts_registers_weights_and_layouts_text() {
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+
+        let theme = ThemeColors::dark();
+        let mut family_checks = (false, false, false);
+        let mut rects = Vec::new();
+
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.fonts(|fonts| {
+                    let families = fonts.families();
+                    family_checks.0 = families.contains(&egui::FontFamily::Proportional);
+                    family_checks.1 = families.contains(&family_semibold());
+                    family_checks.2 = families.contains(&family_bold());
+                });
+                rects.push(ui.label(text_regular("Regular sample", 12.5, theme.text_muted)).rect);
+                rects.push(ui.label(text_semibold("SemiBold sample", 13.0, theme.text_primary)).rect);
+                rects.push(ui.label(text_bold("Bold sample", 15.0, theme.text_primary)).rect);
+                rects.push(
+                    ui.label(heading_with_subtitle(
+                        "Model Download Link",
+                        "(Hugging Face GGUF)",
+                        15.0,
+                        12.0,
+                        &theme,
+                    ))
+                    .rect,
+                );
+            });
+        });
+
+        assert_eq!(family_checks, (true, true, true));
+        assert_eq!(rects.len(), 4);
+        for r in rects {
+            assert!(r.width() > 0.0 && r.height() > 0.0, "expected non-zero rect, got {r:?}");
+        }
+    }
 }
