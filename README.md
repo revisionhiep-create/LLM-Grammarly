@@ -8,9 +8,9 @@ Use **Live Fix** to press a system-wide hotkey in any text field, switch to **Re
 
 ## Demo Video
 
-[![Watch the LLM-Grammarly Demo on YouTube](assets/demo-thumbnail.jpg)](https://www.youtube.com/watch?v=4ZISeBYMDA8)
+[![Watch the LLM-Grammarly Demo on YouTube](assets/demo-thumbnail.jpg)](https://www.youtube.com/watch?v=wODhHUNj1fM)
 
-▶ **[Watch the demo on YouTube](https://www.youtube.com/watch?v=4ZISeBYMDA8)** — GitHub download & unblock, GPU/CPU presets & compute modes, one-click Hugging Face download, Notepad++ Highlight Mode, live Discord `@mention` demo, and Review Docs (`.docx` batch diffs, whole-file fix & timestamped backups).
+▶ **[Watch the demo on YouTube](https://www.youtube.com/watch?v=wODhHUNj1fM)** — GitHub download & unblock, one-click Hugging Face download (pause/resume & Vulkan/Metal), GPU/CPU presets, compute modes & custom hotkeys, Live Fix & Highlight Mode in any text editor, Review Docs (`.txt`/`.md`/`.docx` batch diffs, Rewrite for Clarity whole-file fix & timestamped backups), and Ignore Words (custom terms & social `@mentions`/`#hashtags` protection).
 
 ---
 
