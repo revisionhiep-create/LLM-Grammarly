@@ -156,6 +156,44 @@ pub struct WindowState {
     pub maximized: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IgnoreWordEntry {
+    pub word: String,
+    #[serde(default)]
+    pub match_case: bool,
+    #[serde(default)]
+    pub ignore_word_boundary: bool,
+}
+
+pub fn ignore_word_collides(a: &IgnoreWordEntry, b: &IgnoreWordEntry) -> bool {
+    a.match_case == b.match_case
+        && if a.match_case {
+            a.word == b.word
+        } else {
+            a.word.to_lowercase() == b.word.to_lowercase()
+        }
+}
+
+pub fn normalize_ignore_words(entries: Vec<IgnoreWordEntry>) -> Vec<IgnoreWordEntry> {
+    let mut out: Vec<IgnoreWordEntry> = Vec::with_capacity(entries.len());
+    for mut entry in entries {
+        let trimmed = entry.word.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.len() != entry.word.len() {
+            entry.word = trimmed.to_string();
+        }
+        if !out
+            .iter()
+            .any(|existing| ignore_word_collides(existing, &entry))
+        {
+            out.push(entry);
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -172,6 +210,7 @@ pub struct AppConfig {
     pub window: Option<WindowState>,
     pub backup_dir: Option<String>,
     pub backup_keep_count: usize,
+    pub ignore_words: Vec<IgnoreWordEntry>,
 }
 
 impl Default for AppConfig {
@@ -190,6 +229,7 @@ impl Default for AppConfig {
             window: None,
             backup_dir: None,
             backup_keep_count: DEFAULT_BACKUP_KEEP_COUNT,
+            ignore_words: Vec::new(),
         }
     }
 }
@@ -282,6 +322,7 @@ pub fn load_config() -> AppConfig {
         }
     }
     cfg.backup_keep_count = cfg.backup_keep_count.clamp(1, 500);
+    cfg.ignore_words = normalize_ignore_words(cfg.ignore_words);
     cfg
 }
 
@@ -665,5 +706,86 @@ mod tests {
         let decoded: AppConfig = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.backup_dir.as_deref(), Some("D:\\Backups"));
         assert_eq!(decoded.backup_keep_count, 7);
+    }
+
+    #[test]
+    fn ignore_words_default_empty_roundtrip_and_normalize() {
+        let def = AppConfig::default();
+        assert!(def.ignore_words.is_empty());
+
+        let legacy_json =
+            r#"{"model_url":"https://huggingface.co/a/b/resolve/main/m.gguf"}"#;
+        let decoded_legacy: AppConfig = serde_json::from_str(legacy_json).unwrap();
+        assert!(decoded_legacy.ignore_words.is_empty());
+
+        let mut cfg = AppConfig::default();
+        cfg.ignore_words = vec![
+            IgnoreWordEntry {
+                word: "shadowfox".to_string(),
+                match_case: false,
+                ignore_word_boundary: false,
+            },
+            IgnoreWordEntry {
+                word: "corpa".to_string(),
+                match_case: true,
+                ignore_word_boundary: true,
+            },
+        ];
+        let encoded = serde_json::to_string(&cfg).unwrap();
+        let decoded: AppConfig = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.ignore_words, cfg.ignore_words);
+
+        let normalized = normalize_ignore_words(vec![
+            IgnoreWordEntry {
+                word: "   ".to_string(),
+                match_case: false,
+                ignore_word_boundary: false,
+            },
+            IgnoreWordEntry {
+                word: "  shadowfox ".to_string(),
+                match_case: false,
+                ignore_word_boundary: false,
+            },
+            IgnoreWordEntry {
+                word: "SHADOWFOX".to_string(),
+                match_case: false,
+                ignore_word_boundary: true,
+            },
+            IgnoreWordEntry {
+                word: "US".to_string(),
+                match_case: true,
+                ignore_word_boundary: false,
+            },
+            IgnoreWordEntry {
+                word: "us".to_string(),
+                match_case: true,
+                ignore_word_boundary: false,
+            },
+            IgnoreWordEntry {
+                word: "US".to_string(),
+                match_case: true,
+                ignore_word_boundary: true,
+            },
+        ]);
+        assert_eq!(
+            normalized,
+            vec![
+                IgnoreWordEntry {
+                    word: "shadowfox".to_string(),
+                    match_case: false,
+                    ignore_word_boundary: false,
+                },
+                IgnoreWordEntry {
+                    word: "US".to_string(),
+                    match_case: true,
+                    ignore_word_boundary: false,
+                },
+                IgnoreWordEntry {
+                    word: "us".to_string(),
+                    match_case: true,
+                    ignore_word_boundary: false,
+                },
+            ]
+        );
     }
 }

@@ -13,11 +13,15 @@ use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
-use crate::config::ComputeMode;
+use crate::config::{ComputeMode, IgnoreWordEntry};
+use crate::ignore_words::{
+    extract_unique_protected_terms, find_protected_spans, format_prompt_hint,
+    restore_protected_spans,
+};
 
 const N_CTX: u32 = 4096;
 const N_BATCH: usize = 1024;
@@ -62,7 +66,12 @@ fn choose_text_tag(user_text: &str) -> String {
     }
 }
 
-fn build_prompt_spec(mode: PromptMode, preserve_markdown: bool, user_text: &str) -> PromptSpec {
+fn build_prompt_spec(
+    mode: PromptMode,
+    preserve_markdown: bool,
+    user_text: &str,
+    protected_terms: &[&str],
+) -> PromptSpec {
     let tag = choose_text_tag(user_text);
     let mut system_prompt = match mode {
         PromptMode::GrammarOnly => format!(
@@ -75,6 +84,10 @@ fn build_prompt_spec(mode: PromptMode, preserve_markdown: bool, user_text: &str)
     if preserve_markdown {
         system_prompt
             .push_str(" Preserve all Markdown syntax, inline code, and link URLs unchanged.");
+    }
+    if let Some(hint) = format_prompt_hint(protected_terms) {
+        system_prompt.push(' ');
+        system_prompt.push_str(&hint);
     }
 
     let user_prefix = match mode {
@@ -169,20 +182,28 @@ enum SessionExit {
 
 pub struct LlmHandle {
     tx: Sender<LlmCmd>,
+    ignore_words: Arc<Mutex<Vec<IgnoreWordEntry>>>,
     join: Option<JoinHandle<()>>,
 }
 
 impl LlmHandle {
     pub fn spawn() -> Self {
         let (tx, rx) = mpsc::channel();
+        let ignore_words = Arc::new(Mutex::new(Vec::new()));
+        let ignore_worker = Arc::clone(&ignore_words);
         let join = thread::Builder::new()
             .name("llm-worker".to_string())
-            .spawn(move || worker_loop(rx))
+            .spawn(move || worker_loop(rx, ignore_worker))
             .expect("Failed to spawn LLM worker thread");
         Self {
             tx,
+            ignore_words,
             join: Some(join),
         }
+    }
+
+    pub fn set_ignore_words(&self, words: Vec<IgnoreWordEntry>) {
+        *self.ignore_words.lock().unwrap() = words;
     }
 
     pub fn load(&self, path: PathBuf, compute_mode: ComputeMode) -> Result<LoadInfo> {
@@ -279,6 +300,7 @@ fn run_loaded_session(
     batch: &mut LlamaBatch<'_>,
     n_ctx: usize,
     prompt_cfg: &PromptConfig,
+    ignore_words: &Arc<Mutex<Vec<IgnoreWordEntry>>>,
 ) -> SessionExit {
     loop {
         match rx.recv() {
@@ -289,6 +311,7 @@ fn run_loaded_session(
                 cancel,
                 reply,
             }) => {
+                let ignore_snapshot = ignore_words.lock().unwrap().clone();
                 let res = run_fix(
                     model,
                     ctx,
@@ -298,6 +321,7 @@ fn run_loaded_session(
                     mode,
                     preserve_markdown,
                     &text,
+                    &ignore_snapshot,
                     cancel.as_deref(),
                 );
                 let _ = reply.send(res);
@@ -313,7 +337,7 @@ fn run_loaded_session(
     }
 }
 
-fn worker_loop(rx: Receiver<LlmCmd>) {
+fn worker_loop(rx: Receiver<LlmCmd>, ignore_words: Arc<Mutex<Vec<IgnoreWordEntry>>>) {
     let mut backend = match LlamaBackend::init() {
         Ok(b) => b,
         Err(err) => {
@@ -445,6 +469,7 @@ fn worker_loop(rx: Receiver<LlmCmd>) {
                 &mut batch,
                 n_ctx as usize,
                 &prompt_cfg,
+                &ignore_words,
             ));
             break;
         }
@@ -525,7 +550,7 @@ fn build_prompt_config(model: &LlamaModel, path: &Path) -> Result<PromptConfig> 
     };
 
     let cfg = PromptConfig { style, template };
-    let warmup_spec = build_prompt_spec(PromptMode::GrammarOnly, false, "");
+    let warmup_spec = build_prompt_spec(PromptMode::GrammarOnly, false, "", &[]);
     let _ = tokenize_prompt(model, &cfg, &warmup_spec, "")?;
     Ok(cfg)
 }
@@ -672,7 +697,7 @@ fn warmup_context(
 ) -> Result<()> {
     ctx.clear_kv_cache();
     let vocab = model.vocab();
-    let warmup_spec = build_prompt_spec(PromptMode::GrammarOnly, false, "helo wrold");
+    let warmup_spec = build_prompt_spec(PromptMode::GrammarOnly, false, "helo wrold", &[]);
     let tokens = tokenize_prompt(model, prompt_cfg, &warmup_spec, "helo wrold")?;
     if !tokens.is_empty() {
         decode_prompt_tokens(ctx, batch, &tokens)?;
@@ -833,6 +858,7 @@ fn infer_once(
     mode: PromptMode,
     preserve_markdown: bool,
     core_lf: &str,
+    ignore_words: &[IgnoreWordEntry],
     cancel: Option<&AtomicBool>,
 ) -> Result<String> {
     if core_lf.trim().is_empty() {
@@ -844,7 +870,9 @@ fn infer_once(
     }
 
     let vocab = model.vocab();
-    let spec = build_prompt_spec(mode, preserve_markdown, core_lf);
+    let protected_spans = find_protected_spans(core_lf, ignore_words);
+    let protected_terms = extract_unique_protected_terms(core_lf, &protected_spans, 40);
+    let spec = build_prompt_spec(mode, preserve_markdown, core_lf, &protected_terms);
     let prompt_tokens = tokenize_prompt(model, prompt_cfg, &spec, core_lf)?;
 
     if prompt_tokens.len() + 64 >= n_ctx {
@@ -891,6 +919,12 @@ fn infer_once(
     let cleaned_core = clean_output_with_tag(&raw_output, core_lf, Some(&spec.tag));
     if cleaned_core.is_empty() {
         Ok(core_lf.to_string())
+    } else if !protected_spans.is_empty() {
+        Ok(restore_protected_spans(
+            core_lf,
+            &cleaned_core,
+            &protected_spans,
+        ))
     } else {
         Ok(cleaned_core)
     }
@@ -906,6 +940,7 @@ fn run_fix(
     mode: PromptMode,
     preserve_markdown: bool,
     original_text: &str,
+    ignore_words: &[IgnoreWordEntry],
     cancel: Option<&AtomicBool>,
 ) -> Result<(String, u128)> {
     let started = Instant::now();
@@ -926,6 +961,7 @@ fn run_fix(
         mode,
         preserve_markdown,
         &core_lf,
+        ignore_words,
         cancel,
     )?;
 
@@ -949,6 +985,7 @@ fn run_fix(
                     mode,
                     preserve_markdown,
                     l_core,
+                    ignore_words,
                     cancel,
                 )?;
                 fixed_lines.push(format!("{l_ws}{fixed}{t_ws}"));
@@ -1073,11 +1110,15 @@ mod tests {
 
     #[test]
     fn build_prompt_spec_uses_consistent_tags_and_anti_instruction_guards() {
-        let grammar_spec = build_prompt_spec(PromptMode::GrammarOnly, false, "plain user text");
+        let grammar_spec =
+            build_prompt_spec(PromptMode::GrammarOnly, false, "plain user text", &[]);
         assert_eq!(grammar_spec.tag, "text");
         assert!(grammar_spec.system_prompt.contains("<text>...</text>"));
         assert!(grammar_spec.system_prompt.contains("NEVER instructions"));
         assert!(!grammar_spec.system_prompt.contains("Preserve all Markdown syntax"));
+        assert!(!grammar_spec
+            .system_prompt
+            .contains("Keep these exact words/phrases unchanged"));
         assert!(grammar_spec.user_prefix.contains("<text>"));
         assert_eq!(grammar_spec.user_suffix, "\n</text>");
         assert_eq!(grammar_spec.examples.len(), 2);
@@ -1090,6 +1131,7 @@ mod tests {
             PromptMode::RewriteClarity,
             true,
             "keep <text>literal</text> untouched",
+            &[],
         );
         assert_eq!(md_rewrite_spec.tag, "input_text");
         assert!(md_rewrite_spec
@@ -1105,6 +1147,18 @@ mod tests {
             assert!(ex_user.starts_with(&md_rewrite_spec.user_prefix));
             assert!(ex_user.ends_with(&md_rewrite_spec.user_suffix));
         }
+
+        let protected_spec = build_prompt_spec(
+            PromptMode::GrammarOnly,
+            false,
+            "hey shadowfox",
+            &["shadowfox", "corpa"],
+        );
+        assert!(protected_spec
+            .system_prompt
+            .contains("Keep these exact words/phrases unchanged"));
+        assert!(protected_spec.system_prompt.contains("\"shadowfox\""));
+        assert!(protected_spec.system_prompt.contains("\"corpa\""));
     }
 
     #[test]

@@ -8,6 +8,7 @@ mod downloader;
 mod hotkey;
 mod icon;
 mod icon_render;
+mod ignore_words;
 mod llm;
 mod taskbar;
 mod widgets;

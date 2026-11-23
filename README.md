@@ -2,7 +2,7 @@
 
 A fast, local, private Windows & macOS grammar and spelling corrector written in Rust (`eframe`/`egui` + embedded `llama.cpp` with Vulkan GPU on Windows, Apple Metal GPU on macOS, and automatic CPU fallback on both).
 
-Use **Live Fix** to press a system-wide hotkey in any text field, or switch to **Review Docs** to inspect and apply local AI fixes across `.txt`, `.md`, and `.docx` files with word diffs, formatting preservation, and automatic backups — no cloud APIs, no Python runtime, and no external Ollama server required.
+Use **Live Fix** to press a system-wide hotkey in any text field, switch to **Review Docs** to inspect and apply local AI fixes across `.txt`, `.md`, and `.docx` files with word diffs, formatting preservation, and automatic backups, or add custom terms to **Ignore Words** so usernames, slang, and jargon stay untouched — no cloud APIs, no Python runtime, and no external Ollama server required.
 
 ---
 
@@ -36,6 +36,7 @@ A single self-contained Universal macOS `.app` (`arm64` + `x86_64`, macOS 12+) w
 6. **Start fixing text anywhere**:
    - **Live Fix tab**: Place your cursor in any app and press **`Ctrl + Shift + G`** (default macOS hotkey; avoids MacBook media keys on `F8`, and can be rebound to any shortcut including `Cmd`/`Option`/`Ctrl`/`Shift` or `F1`–`F12`).
    - **Review Docs tab**: Drag-and-drop or browse for a `.txt`, `.md`, or `.docx` document for batch offline diffing and timestamped backups.
+   - **Ignore Words tab**: Add usernames, slang, acronyms, or multi-word phrases (with per-word **Match Case** and **Ignore Word Boundary** toggles) that should stay untouched across both **Live Fix** and **Review Docs**.
 
 ---
 
@@ -61,6 +62,7 @@ No installation, Python, or external dependencies required — just download and
 6. **Start fixing text anywhere — or review whole documents**:
    - **Live Fix tab**: Click into any text box (browser, Discord/Slack, Notepad, email, IDE, etc.) and press **`F8`** (default hotkey) to fix spelling, grammar, and punctuation in place.
    - **Review Docs tab**: Switch to **Review Docs** below the header bar and drag-and-drop (or click **Browse File...**) to open a `.txt`, `.md`, or `.docx` file for chunked offline review.
+   - **Ignore Words tab**: Add usernames, slang, acronyms, or multi-word phrases (with per-word **Match Case** and **Ignore Word Boundary** toggles) to keep them untouched across both **Live Fix** and **Review Docs**.
    - *(Optional)* Right-click `LLM-Grammarly.exe` in File Explorer and choose **Pin to Start**, **Show more options → Pin to taskbar**, or **Create shortcut** for quick access later.
 
 ---
@@ -82,12 +84,16 @@ No installation, Python, or external dependencies required — just download and
 - **Dark & Light Mode Switch**:
   - Top-right sun (left / Light Mode) and moon (right / Dark Mode) pill switch next to the status badge. Defaults to **Dark Mode** on first launch, syncs the native Windows/macOS title bar appearance, and saves your preference in `settings.json`.
 - **Review Docs Tab (`.txt`, `.md`, `.docx`)**:
-  - Switch between **Live Fix** and **Review Docs** directly beneath the top header bar.
+  - Switch between **Live Fix**, **Review Docs**, and **Ignore Words** directly beneath the top header bar.
   - **File Loading**: Load `.txt`, `.md`, or `.docx` documents via drag-and-drop or the native **Browse File...** dialog.
   - **Prompt Modes**: Choose **Spelling / Grammar Only** (strict typo, grammar, and punctuation fixes preserving wording and tone) or **Rewrite for Clarity** (improves flow, readability, and conciseness while keeping the original meaning).
   - **Review Scopes & Auto-Load**: Run **One Batch at a Time** (~260 target / 350 max words per batch without splitting paragraphs) to inspect diffs batch by batch, or **Fix Whole File** to process all batches sequentially while auto-accepting normal edits and flagging any chunk whose character length changes by more than `±25%` (`> ±25%`) for manual review. If the model is **Off** when started, clicking the primary Run button automatically loads your cached model first.
   - **Format & Structure Preservation**: `.txt` and `.md` files preserve original `CRLF`/`LF` line endings, and Markdown skips YAML frontmatter, fenced code blocks, image lines, HTML comments, and thematic breaks verbatim. `.docx` files patch `word/document.xml` text runs in place via word-diff alignment so styles, bold/italic formatting, `<w:hyperlink>` / `<w:ins>` run boundaries, tables, Word fields, tracked deletions (`<w:del>`), and embedded media are preserved intact.
   - **Diff Viewer, Progress & Cancellation**: Inspect **Inline** diffs (or **Side-by-side** diffs on windows `>= 700 px` wide), accept/reject individual items or click **Accept All in Batch**, monitor live batch percentage on the reused progress bar + Windows taskbar / macOS Dock badge, and abort cleanly mid-chunk with **Cancel** without touching the source file.
+- **Ignore Words Tab (`Live Fix` & `Review Docs`)**:
+  - **Protect Custom Terms**: Keep usernames, gaming/chat slang, product names, acronyms, and multi-word phrases untouched across both **Live Fix** and **Review Docs**.
+  - **Per-Word Matching Controls**: Set **Match Case** (exact capitalization, e.g. protect `US` without ignoring `us`) and **Ignore Word Boundary** (also protect longer words containing the term, e.g. `corpa` also protects `megacorpa` and `corpas`) when adding entries, or toggle either option directly on any row in **Saved Words**. Supports bulk comma/newline entry, automatic search filtering at 8+ saved words, single-row removal (`×`), and two-step **Clear All**, persisted in `settings.json`.
+  - **Hybrid Rust Protection Engine**: Pre-scans input text in Rust, injects only terms actually present in the current text as a lightweight prompt hint, and runs deterministic token-alignment restoration after inference—preserving exact spelling, original capitalization, and possessives (e.g. `ShadowFox's`) even if the LLM splits or rewrites a word, without interfering with surrounding grammar fixes.
 - **Backup Engine & Safe Atomic Saves**:
   - **File-Lock Pre-Check**: Probes exclusive write access (`share_mode(0)` on Windows; `flock` + Word `~$` lock file check on macOS) before loading or saving so you are warned immediately if a document is open in Microsoft Word or another app.
   - **Timestamped Non-Overwriting Backups**: **Save (with Backup)** copies the original file to `<name>_YYYY-MM-DD_HHMMSS.<ext>` (with `_1`, `_2` collision suffixes if needed) inside `Backups\` next to `LLM-Grammarly.exe` on Windows (falling back to `%LOCALAPPDATA%\LLM Grammarly\Backups`) or `~/Library/Application Support/LLM-Grammarly/Backups` on macOS (or any writable folder chosen in **Backup Settings**).
@@ -129,6 +135,9 @@ No installation, Python, or external dependencies required — just download and
    - Review the **Inline** or **Side-by-side** diffs, check any `> ±25%` length-change badges, use **Prev** / **Next** between batches, and click **Accept**, **Reject**, or **Accept All in Batch**.
    - Click **Save (with Backup)** to back up the original and overwrite in place atomically, or **Save As...** to save a new copy in the same format.
    - Expand **Backup Settings** at the bottom to change the backup folder (**Browse...** / **Reset**) or adjust **Keep last backups** (`1`–`500`, default `20`).
+6. **Protect Custom Words (`Ignore Words` tab)**:
+   - Enter a word or phrase (or paste several separated by commas or new lines), set **Match Case** and/or **Ignore Word Boundary**, and click **Add** (or press **Enter**).
+   - Toggle **Match Case** or **Ignore Boundary** inline on any row in **Saved Words**, remove individual entries with **`×`**, or clear the list via **Clear All** (with confirmation). Updates apply immediately to both **Live Fix** and **Review Docs** and save automatically to `settings.json`.
 
 ---
 
@@ -182,19 +191,20 @@ LLM-Grammarly/
 │   │   └── icon.ico                  # Multi-resolution neutral keyboard icon (16..256 px)
 │   └── src/
 │       ├── main.rs                   # Single-instance mutex, --self-test runner, eframe entrypoint
-│       ├── app.rs                    # egui two-tab UI (Live Fix & Review Docs), diffs, settings
+│       ├── app.rs                    # egui three-tab UI (Live Fix, Review Docs & Ignore Words), diffs, settings
 │       ├── controller.rs             # AppPhase state machine and background worker coordination
 │       ├── doc_review.rs             # Document loader (.txt/.md/.docx), batcher, word diffing, review worker
 │       ├── docx.rs                   # Formatting-preserving word/document.xml parser, patcher, ZIP validator
 │       ├── backup.rs                 # Windows backup engine, file-lock pre-check, managed pruning, ReplaceFileW save
 │       ├── widgets.rs                # Theme palette, custom toggle pills, progress bar, formatting helpers
-│       ├── config.rs                 # settings.json persistence, HF URL normalization, hotkey/window/compute/backup config
+│       ├── config.rs                 # settings.json persistence, HF URL normalization, hotkey/window/compute/backup/ignore-word config
 │       ├── downloader.rs             # Streaming GGUF downloader with HTTP Range resume & magic validation
 │       ├── hotkey.rs                 # Win32 RegisterHotKey loop, SendInput copy/paste, clipboard restore
 │       ├── llm.rs                    # Embedded llama-cpp-2 worker (Grammar/Rewrite prompts, Vulkan/CPU fallback)
 │       ├── taskbar.rs                # Win32 ITaskbarList3, tray icon/notifications, file/folder dialogs, monitor clamping
 │       ├── icon.rs                   # Converts rendered RGBA icon buffers to egui/tray/Win32 HICON formats
-│       └── icon_render.rs            # Pure-Rust anti-aliased procedural icon renderer shared with build.rs
+│       ├── icon_render.rs            # Pure-Rust anti-aliased procedural icon renderer shared with build.rs
+│       └── ignore_words.rs           # Protected-span matcher, prompt hint builder & deterministic token-alignment restorer
 └── macos/                            # macOS implementation (eframe + Cocoa/Carbon + Apple Metal)
     ├── Cargo.toml                    # macOS crate manifest (Metal GPU, OpenMP disabled for self-containment)
     ├── Cargo.lock                    # Locked macOS dependency graph
@@ -202,19 +212,20 @@ LLM-Grammarly/
     └── src/
         ├── macos_bridge.m            # Objective-C ARC bridge (Carbon hotkeys, CGEvent, NSPasteboard, NSStatusItem, NSOpenPanel)
         ├── main.rs                   # flock single-instance guard, --version, --self-test, eframe entrypoint
-        ├── app.rs                    # egui UI with macOS shortcuts, Accessibility prompt banner & Menu Bar controls
+        ├── app.rs                    # egui three-tab UI (Live Fix, Review Docs & Ignore Words), Accessibility prompt banner & Menu Bar controls
         ├── controller.rs             # AppPhase state machine and background worker coordination
         ├── doc_review.rs             # Document loader (.txt/.md/.docx), batcher, word diffing, review worker
         ├── docx.rs                   # Formatting-preserving word/document.xml parser, patcher, ZIP validator
         ├── backup.rs                 # macOS backup engine, flock / Word lock pre-check, atomic rename save
         ├── widgets.rs                # Theme palette, custom toggle pills, progress bar, formatting helpers
-        ├── config.rs                 # ~/Library/Application Support/LLM-Grammarly settings, models & backups config
+        ├── config.rs                 # ~/Library/Application Support/LLM-Grammarly settings, models, backups & ignore-word config
         ├── downloader.rs             # Streaming GGUF downloader with HTTP Range resume & magic validation
         ├── hotkey.rs                 # Carbon global hotkey controller, CGEvent Cmd+A/C/V & NSPasteboard restore
         ├── llm.rs                    # Embedded llama-cpp-2 worker (Apple Metal GPU / CPU fallback)
         ├── taskbar.rs                # NSStatusItem Menu Bar, Dock progress badge, notifications & native Cocoa panels
         ├── icon.rs                   # Converts rendered RGBA icon buffers to egui ViewportIcon
-        └── icon_render.rs            # Pure-Rust anti-aliased procedural icon renderer shared with build.rs
+        ├── icon_render.rs            # Pure-Rust anti-aliased procedural icon renderer shared with build.rs
+        └── ignore_words.rs           # Protected-span matcher, prompt hint builder & deterministic token-alignment restorer
 ```
 
 > **Note**: Large model files (`*.gguf`, `*.gguf.part`) are excluded from git history via `.gitignore`. Prebuilt [`LLM-Grammarly.exe`](https://github.com/revisionhiep-create/LLM-Grammarly/raw/main/LLM-Grammarly.exe) is tracked directly on `main`, and Universal macOS builds (`LLM-Grammarly-macOS.dmg`) plus archived builds are published on [GitHub Releases](https://github.com/revisionhiep-create/LLM-Grammarly/releases/latest).

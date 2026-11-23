@@ -12,9 +12,10 @@ use crate::backup::{
     check_file_not_locked, probe_dir_writable, resolve_backup_dir, ResolvedBackupDir,
 };
 use crate::config::{
-    default_backup_dir, default_model_dir, display_model_name, effective_model_dir, load_config,
-    local_model_path, normalize_model_url, partial_download_path, preset_for_url, save_config,
-    AppConfig, ComputeMode, HotkeyBinding, WindowState, MODEL_PRESETS,
+    default_backup_dir, default_model_dir, display_model_name, effective_model_dir,
+    ignore_word_collides, load_config, local_model_path, normalize_ignore_words,
+    normalize_model_url, partial_download_path, preset_for_url, save_config, AppConfig,
+    ComputeMode, HotkeyBinding, IgnoreWordEntry, WindowState, MODEL_PRESETS,
 };
 use crate::controller::{controller_loop, notify_highlight_mode, AppPhase, CtrlCmd, SharedState};
 use crate::doc_review::{
@@ -41,6 +42,17 @@ enum ActiveTab {
     #[default]
     LiveFix,
     ReviewDocs,
+    IgnoreWords,
+}
+
+#[derive(Default)]
+struct IgnoreWordsUiState {
+    word_input: String,
+    match_case: bool,
+    ignore_word_boundary: bool,
+    search_filter: String,
+    notice: Option<(String, bool)>,
+    confirm_clear_all: bool,
 }
 
 struct DocReviewUiState {
@@ -302,6 +314,7 @@ pub struct KeyboardLlmApp {
     browsing_folder: Arc<AtomicBool>,
     active_tab: ActiveTab,
     doc_state: DocReviewUiState,
+    ignore_state: IgnoreWordsUiState,
     accessibility_trusted: bool,
     accessibility_checked_at: Option<Instant>,
 }
@@ -393,6 +406,7 @@ impl KeyboardLlmApp {
         };
 
         let llm = Arc::new(LlmHandle::spawn());
+        llm.set_ignore_words(config.ignore_words.clone());
 
         let tx_hk = ctrl_tx.clone();
         let ctx_hk = cc.egui_ctx.clone();
@@ -478,6 +492,7 @@ impl KeyboardLlmApp {
             browsing_folder: Arc::new(AtomicBool::new(false)),
             active_tab: ActiveTab::LiveFix,
             doc_state,
+            ignore_state: IgnoreWordsUiState::default(),
             accessibility_trusted: crate::hotkey::is_accessibility_trusted(),
             accessibility_checked_at: Some(Instant::now()),
         }
@@ -2024,6 +2039,449 @@ impl KeyboardLlmApp {
                 });
             });
     }
+
+    fn sync_ignore_words(&mut self) {
+        self.config.ignore_words =
+            normalize_ignore_words(std::mem::take(&mut self.config.ignore_words));
+        self.llm.set_ignore_words(self.config.ignore_words.clone());
+        self.save_current_config();
+    }
+
+    fn try_add_ignore_words(&mut self) {
+        let candidates: Vec<String> = self
+            .ignore_state
+            .word_input
+            .split('\n')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned)
+            .collect();
+
+        if candidates.is_empty() {
+            self.ignore_state.notice = Some(("Enter a word or phrase first.".to_string(), true));
+            return;
+        }
+
+        let mut added = 0usize;
+        let mut skipped = 0usize;
+        for word in candidates {
+            let entry = IgnoreWordEntry {
+                word,
+                match_case: self.ignore_state.match_case,
+                ignore_word_boundary: self.ignore_state.ignore_word_boundary,
+            };
+            if self
+                .config
+                .ignore_words
+                .iter()
+                .any(|existing| ignore_word_collides(existing, &entry))
+            {
+                skipped += 1;
+            } else {
+                self.config.ignore_words.push(entry);
+                added += 1;
+            }
+        }
+
+        self.ignore_state.confirm_clear_all = false;
+        if added > 0 {
+            self.ignore_state.word_input.clear();
+            self.sync_ignore_words();
+            let msg = if added == 1 && skipped == 0 {
+                "Added 1 word to Ignore Words.".to_string()
+            } else if skipped == 0 {
+                format!("Added {added} words to Ignore Words.")
+            } else {
+                format!("Added {added}, skipped {skipped} duplicate(s).")
+            };
+            self.ignore_state.notice = Some((msg, false));
+        } else {
+            self.ignore_state.notice =
+                Some(("Already in Ignore Words with matching options.".to_string(), true));
+        }
+    }
+
+    fn render_ignore_words_tab(&mut self, ui: &mut egui::Ui, theme: &ThemeColors) {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
+
+                // 1. Add Word Card
+                card_frame(theme).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+
+                    let total_words = self.config.ignore_words.len();
+                    ui.horizontal(|ui| {
+                        ui.label(heading_with_subtitle(
+                            "Ignore Words",
+                            "(Live Fix & Review Docs)",
+                            15.0,
+                            12.0,
+                            theme,
+                        ));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let count_label = if total_words == 1 {
+                                "1 word".to_string()
+                            } else {
+                                format!("{total_words} words")
+                            };
+                            ui.label(text_regular(count_label, 11.5, theme.text_muted));
+                        });
+                    });
+
+                    ui.label(text_regular(
+                        "Words or phrases added here stay untouched and will not be corrected or replaced.",
+                        12.0,
+                        theme.text_muted,
+                    ));
+
+                    let mut submitted_enter = false;
+                    let mut add_clicked = false;
+                    ui.horizontal(|ui| {
+                        let edit_w = (ui.available_width() - 82.0).max(120.0);
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut self.ignore_state.word_input)
+                                .desired_width(edit_w)
+                                .hint_text("Enter a word or phrase (e.g. ShadowFox, corpa)")
+                                .margin(egui::Margin::symmetric(8, 6)),
+                        );
+                        if resp.changed() {
+                            self.ignore_state.notice = None;
+                            self.ignore_state.confirm_clear_all = false;
+                        }
+                        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            submitted_enter = true;
+                        }
+
+                        let can_add = !self.ignore_state.word_input.trim().is_empty();
+                        let (fill, text_col, stroke) = if can_add {
+                            (theme.accent_fill, theme.bg_card, egui::Stroke::NONE)
+                        } else {
+                            (
+                                theme.btn_sec_bg,
+                                theme.text_muted,
+                                egui::Stroke::new(1.0_f32, theme.border_med),
+                            )
+                        };
+                        if ui
+                            .add_enabled(
+                                can_add,
+                                egui::Button::new(text_bold("Add", 12.5, text_col))
+                                    .fill(fill)
+                                    .stroke(stroke)
+                                    .corner_radius(egui::CornerRadius::same(6))
+                                    .min_size(egui::vec2(74.0, 28.0)),
+                            )
+                            .clicked()
+                        {
+                            add_clicked = true;
+                        }
+                    });
+
+                    if submitted_enter || add_clicked {
+                        self.try_add_ignore_words();
+                    }
+
+                    ui.horizontal(|ui| {
+                        ui.checkbox(
+                            &mut self.ignore_state.match_case,
+                            text_semibold("Match Case", 12.5, theme.text_primary),
+                        )
+                        .on_hover_text(
+                            "Only ignore when capitalization matches exactly (e.g. keep \"US\" without ignoring \"us\")",
+                        );
+
+                        ui.add_space(12.0);
+
+                        ui.checkbox(
+                            &mut self.ignore_state.ignore_word_boundary,
+                            text_semibold("Ignore Word Boundary", 12.5, theme.text_primary),
+                        )
+                        .on_hover_text(
+                            "Also protect longer words containing this text (e.g. \"corpa\" also protects \"megacorpa\" and \"corpas\")",
+                        );
+                    });
+
+                    if let Some((msg, is_warn)) = self.ignore_state.notice.as_ref() {
+                        let col = if *is_warn {
+                            theme.dot_busy
+                        } else {
+                            theme.text_muted
+                        };
+                        ui.label(text_regular(msg, 11.5, col));
+                    }
+                });
+
+                // 2. Saved Words Card
+                card_frame(theme).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+
+                    let mut do_clear_all = false;
+                    ui.horizontal(|ui| {
+                        ui.label(text_bold("Saved Words", 15.0, theme.text_primary));
+                        if !self.config.ignore_words.is_empty() {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.spacing_mut().item_spacing.x = 6.0;
+                                    if self.ignore_state.confirm_clear_all {
+                                        if ui
+                                            .add(
+                                                egui::Button::new(text_semibold(
+                                                    "Confirm Clear?",
+                                                    11.5,
+                                                    theme.error_text,
+                                                ))
+                                                .fill(theme.error_bg)
+                                                .stroke(egui::Stroke::new(
+                                                    1.0_f32,
+                                                    theme.error_border,
+                                                ))
+                                                .corner_radius(egui::CornerRadius::same(5))
+                                                .min_size(egui::vec2(100.0, 24.0)),
+                                            )
+                                            .clicked()
+                                        {
+                                            do_clear_all = true;
+                                        }
+                                        if ui
+                                            .add(
+                                                egui::Button::new(text_regular(
+                                                    "Cancel",
+                                                    11.5,
+                                                    theme.text_muted,
+                                                ))
+                                                .fill(egui::Color32::TRANSPARENT)
+                                                .stroke(egui::Stroke::new(
+                                                    1.0_f32,
+                                                    theme.border_subtle,
+                                                ))
+                                                .corner_radius(egui::CornerRadius::same(5))
+                                                .min_size(egui::vec2(54.0, 24.0)),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.ignore_state.confirm_clear_all = false;
+                                        }
+                                    } else if ui
+                                        .add(
+                                            egui::Button::new(text_regular(
+                                                "Clear All",
+                                                11.5,
+                                                theme.text_muted,
+                                            ))
+                                            .fill(egui::Color32::TRANSPARENT)
+                                            .stroke(egui::Stroke::new(
+                                                1.0_f32,
+                                                theme.border_subtle,
+                                            ))
+                                            .corner_radius(egui::CornerRadius::same(5))
+                                            .min_size(egui::vec2(66.0, 24.0)),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.ignore_state.confirm_clear_all = true;
+                                    }
+                                },
+                            );
+                        }
+                    });
+
+                    if do_clear_all {
+                        self.config.ignore_words.clear();
+                        self.ignore_state.search_filter.clear();
+                        self.ignore_state.confirm_clear_all = false;
+                        self.ignore_state.notice =
+                            Some(("Cleared all ignored words.".to_string(), false));
+                        self.sync_ignore_words();
+                    }
+
+                    if self.config.ignore_words.len() >= 8 {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.ignore_state.search_filter)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("Filter saved words...")
+                                .margin(egui::Margin::symmetric(8, 5)),
+                        );
+                    } else if !self.ignore_state.search_filter.is_empty() {
+                        self.ignore_state.search_filter.clear();
+                    }
+
+                    if self.config.ignore_words.is_empty() {
+                        egui::Frame::new()
+                            .fill(theme.bg_callout)
+                            .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
+                            .corner_radius(egui::CornerRadius::same(8))
+                            .inner_margin(egui::Margin::same(10))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.label(text_regular(
+                                    "No ignored words yet. Add usernames, slang, or custom terms above to keep them unchanged.",
+                                    12.0,
+                                    theme.text_muted,
+                                ));
+                            });
+                    } else {
+                        enum RowAction {
+                            ToggleCase(usize),
+                            ToggleBoundary(usize),
+                            Remove(usize),
+                        }
+                        let filter_lower = self.ignore_state.search_filter.trim().to_lowercase();
+                        let mut row_action: Option<RowAction> = None;
+                        let mut shown = 0usize;
+
+                        for (idx, entry) in self.config.ignore_words.iter().enumerate() {
+                            if !filter_lower.is_empty()
+                                && !entry.word.to_lowercase().contains(&filter_lower)
+                            {
+                                continue;
+                            }
+                            shown += 1;
+
+                            egui::Frame::new()
+                                .fill(theme.bg_callout)
+                                .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
+                                .corner_radius(egui::CornerRadius::same(6))
+                                .inner_margin(egui::Margin::symmetric(10, 6))
+                                .show(ui, |ui| {
+                                    let row_w = ui.available_width();
+                                    ui.set_width(row_w);
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(row_w, 24.0),
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            ui.spacing_mut().item_spacing.x = 6.0;
+                                            if ui
+                                                .add(
+                                                    egui::Button::new(text_semibold(
+                                                        "×",
+                                                        12.5,
+                                                        theme.text_muted,
+                                                    ))
+                                                    .fill(egui::Color32::TRANSPARENT)
+                                                    .stroke(egui::Stroke::new(
+                                                        1.0_f32,
+                                                        theme.border_subtle,
+                                                    ))
+                                                    .corner_radius(egui::CornerRadius::same(5))
+                                                    .min_size(egui::vec2(26.0, 24.0)),
+                                                )
+                                                .on_hover_text("Remove")
+                                                .clicked()
+                                            {
+                                                row_action = Some(RowAction::Remove(idx));
+                                            }
+
+                                            if chip_button(
+                                                ui,
+                                                theme,
+                                                "Ignore Boundary",
+                                                entry.ignore_word_boundary,
+                                                true,
+                                                egui::vec2(104.0, 24.0),
+                                                11.0,
+                                            )
+                                            .on_hover_text(
+                                                "Ignore Word Boundary: also match inside longer words",
+                                            )
+                                            .clicked()
+                                            {
+                                                row_action = Some(RowAction::ToggleBoundary(idx));
+                                            }
+
+                                            if chip_button(
+                                                ui,
+                                                theme,
+                                                "Match Case",
+                                                entry.match_case,
+                                                true,
+                                                egui::vec2(78.0, 24.0),
+                                                11.0,
+                                            )
+                                            .on_hover_text(
+                                                "Match Case: require exact capitalization",
+                                            )
+                                            .clicked()
+                                            {
+                                                row_action = Some(RowAction::ToggleCase(idx));
+                                            }
+
+                                            let rem_w = ui.available_width().max(40.0);
+                                            ui.allocate_ui_with_layout(
+                                                egui::vec2(rem_w, 24.0),
+                                                egui::Layout::left_to_right(egui::Align::Center),
+                                                |ui| {
+                                                    ui.add(
+                                                        egui::Label::new(text_semibold(
+                                                            &entry.word,
+                                                            13.0,
+                                                            theme.text_primary,
+                                                        ))
+                                                        .truncate(),
+                                                    )
+                                                    .on_hover_text(&entry.word);
+                                                },
+                                            );
+                                        },
+                                    );
+                                });
+                        }
+
+                        if shown == 0 {
+                            ui.label(text_regular(
+                                "No saved words match your filter.",
+                                12.0,
+                                theme.text_muted,
+                            ));
+                        }
+
+                        if let Some(action) = row_action {
+                            self.ignore_state.confirm_clear_all = false;
+                            match action {
+                                RowAction::ToggleCase(idx) => {
+                                    let mut candidate = self.config.ignore_words[idx].clone();
+                                    candidate.match_case = !candidate.match_case;
+                                    let collides = self
+                                        .config
+                                        .ignore_words
+                                        .iter()
+                                        .enumerate()
+                                        .any(|(j, other)| {
+                                            j != idx && ignore_word_collides(other, &candidate)
+                                        });
+                                    if collides {
+                                        self.ignore_state.notice = Some((
+                                            "Another entry already exists with those options."
+                                                .to_string(),
+                                            true,
+                                        ));
+                                    } else {
+                                        self.config.ignore_words[idx] = candidate;
+                                        self.ignore_state.notice = None;
+                                        self.sync_ignore_words();
+                                    }
+                                }
+                                RowAction::ToggleBoundary(idx) => {
+                                    self.config.ignore_words[idx].ignore_word_boundary =
+                                        !self.config.ignore_words[idx].ignore_word_boundary;
+                                    self.ignore_state.notice = None;
+                                    self.sync_ignore_words();
+                                }
+                                RowAction::Remove(idx) => {
+                                    self.config.ignore_words.remove(idx);
+                                    self.ignore_state.notice = None;
+                                    self.sync_ignore_words();
+                                }
+                            }
+                        }
+                    }
+                });
+            });
+    }
 }
 
 fn build_inline_diff_job(ops: &[DiffOp], theme: &ThemeColors) -> egui::text::LayoutJob {
@@ -2346,6 +2804,7 @@ impl eframe::App for KeyboardLlmApp {
                     .clicked()
                     {
                         self.active_tab = ActiveTab::LiveFix;
+                        self.ignore_state.confirm_clear_all = false;
                     }
                     if chip_button(
                         ui,
@@ -2359,6 +2818,20 @@ impl eframe::App for KeyboardLlmApp {
                     .clicked()
                     {
                         self.active_tab = ActiveTab::ReviewDocs;
+                        self.ignore_state.confirm_clear_all = false;
+                    }
+                    if chip_button(
+                        ui,
+                        &theme,
+                        "Ignore Words",
+                        self.active_tab == ActiveTab::IgnoreWords,
+                        true,
+                        egui::vec2(116.0, 28.0),
+                        13.0,
+                    )
+                    .clicked()
+                    {
+                        self.active_tab = ActiveTab::IgnoreWords;
                     }
                 });
 
@@ -3106,6 +3579,9 @@ impl eframe::App for KeyboardLlmApp {
                             &phase,
                             cached_size.is_some(),
                         );
+                    }
+                    ActiveTab::IgnoreWords => {
+                        self.render_ignore_words_tab(ui, &theme);
                     }
                 }
             });
