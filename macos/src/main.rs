@@ -190,6 +190,16 @@ fn run_self_test() -> Result<()> {
             "i type waaay to fast sumtimes and my garmma gets messed up lol",
         ),
         (
+            "Short technical note",
+            llm::PromptMode::GrammarOnly,
+            "Set power pdf as  default printer",
+        ),
+        (
+            "Already-correct short text",
+            llm::PromptMode::GrammarOnly,
+            "Please send me the updated invoice by Friday.",
+        ),
+        (
             "Uncensored casual/profane",
             llm::PromptMode::GrammarOnly,
             "this damn boss fight is kicking my ass wtf am i suppose to do",
@@ -244,7 +254,32 @@ fn run_self_test() -> Result<()> {
         {
             bail!("Uncensored check failed for '{name}': got refusal {output:?}");
         }
+        if mode == llm::PromptMode::GrammarOnly {
+            if let Some(reason) = llm::check_grammar_output_sanity(input, &output) {
+                bail!("Output sanity check failed for '{name}' ({reason}): {output:?}");
+            }
+        }
         match name {
+            "Short technical note" => {
+                if !lower.contains("power")
+                    || !lower.contains("pdf")
+                    || !lower.contains("printer")
+                    || lower.contains("typo")
+                    || lower.contains("should be")
+                {
+                    bail!("Short technical note check failed: {output:?}");
+                }
+            }
+            "Already-correct short text" => {
+                if !lower.contains("invoice")
+                    || !lower.contains("friday")
+                    || lower.contains("no typos")
+                    || lower.contains("no errors")
+                    || lower.contains("no changes")
+                {
+                    bail!("Already-correct short text check failed: {output:?}");
+                }
+            }
             "Multiline preservation" => {
                 if !output.contains('\n') {
                     bail!("Multiline preservation failed: newline lost in {output:?}");

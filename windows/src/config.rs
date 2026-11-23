@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 pub const DEFAULT_MODEL_URL: &str = "https://huggingface.co/HauhauCS/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive/resolve/main/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf";
 pub const CPU_STRONG_MODEL_URL: &str = "https://huggingface.co/HauhauCS/Qwen3.5-2B-Uncensored-HauhauCS-Aggressive/resolve/main/Qwen3.5-2B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf";
-pub const CPU_WEAK_MODEL_URL: &str = "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-Q4_K_M.gguf";
+pub const CPU_WEAK_MODEL_URL: &str = "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q8_0.gguf";
 pub const DEFAULT_BACKUP_KEEP_COUNT: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -43,8 +43,8 @@ pub const MODEL_PRESETS: [ModelPreset; 3] = [
     },
     ModelPreset {
         label: "CPU Weak",
-        summary: "LFM2.5-1.2B-Instruct, ~697 MB",
-        tooltip: "LiquidAI LFM2.5-1.2B-Instruct Q4_K_M (~697 MB) — Lightweight hybrid model for older or low-RAM CPUs",
+        summary: "Qwen3.5-0.8B Q8_0, ~774 MB",
+        tooltip: "Qwen3.5-0.8B Q8_0 (~774 MB) — Lightweight high-precision 0.8B model for older or low-RAM CPUs",
         min_width: 82.0,
         url: CPU_WEAK_MODEL_URL,
     },

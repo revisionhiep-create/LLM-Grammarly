@@ -764,6 +764,41 @@ pub fn controller_loop(
                         }
                     }
                 }
+                HotkeyEvent::FixSkipped { elapsed_ms, reason } => {
+                    let updated = {
+                        let mut s = state.lock().unwrap();
+                        let backend_desc = match &s.phase {
+                            AppPhase::Fixing { backend_desc } | AppPhase::On { backend_desc } => {
+                                Some(backend_desc.clone())
+                            }
+                            _ => None,
+                        };
+                        if let Some(backend_desc) = backend_desc {
+                            s.phase = AppPhase::On {
+                                backend_desc: backend_desc.clone(),
+                            };
+                            let secs = (elapsed_ms as f64) / 1000.0;
+                            s.notice = format!(
+                                "{backend_desc} · Kept original text ({reason}, {secs:.2}s)"
+                            );
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if updated {
+                        sync_shell(true, false, Some(TaskbarProgress::None));
+                    }
+                    if shared_show_notifications.load(Ordering::Relaxed) {
+                        if let Some(sh) = shell.as_ref() {
+                            sh.notify(
+                                "LLM Grammarly — Kept Original",
+                                &format!("Skipped unexpected model output ({reason})"),
+                                true,
+                            );
+                        }
+                    }
+                }
                 HotkeyEvent::FixNotice(msg) => {
                     let updated = {
                         let mut s = state.lock().unwrap();

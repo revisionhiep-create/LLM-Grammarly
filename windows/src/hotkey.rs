@@ -41,6 +41,7 @@ pub enum HotkeyEvent {
     FixingStarted,
     FixSucceeded { elapsed_ms: u128, changed: bool },
     FixCopiedToClipboard { elapsed_ms: u128 },
+    FixSkipped { elapsed_ms: u128, reason: &'static str },
     FixNotice(String),
     FixError(String),
     TogglePowerRequested,
@@ -632,6 +633,17 @@ fn run_fix_pipeline(
                     elapsed_ms,
                     changed: false,
                 });
+                return;
+            }
+
+            if let Some(reason) = crate::llm::check_grammar_output_sanity(&captured, &fixed) {
+                if !fix_highlighted_only && same_window {
+                    tap_key(VK_RIGHT);
+                }
+                if let Some(prev) = prev_clipboard {
+                    let _ = write_clipboard_text(&prev);
+                }
+                notify(HotkeyEvent::FixSkipped { elapsed_ms, reason });
                 return;
             }
 

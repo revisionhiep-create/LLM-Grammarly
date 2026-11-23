@@ -1052,9 +1052,17 @@ impl KeyboardLlmApp {
                                     };
                                     item.length_delta_pct = delta;
                                     item.error = None;
+                                    let sanity_flagged = changed
+                                        && self.doc_state.prompt_mode == PromptMode::GrammarOnly
+                                        && crate::llm::check_grammar_output_sanity(
+                                            &item.original,
+                                            &fixed,
+                                        )
+                                        .is_some();
                                     item.decision = if changed
                                         && auto_accept_unflagged
                                         && delta.is_none()
+                                        && !sanity_flagged
                                     {
                                         ReviewDecision::Accepted
                                     } else {
