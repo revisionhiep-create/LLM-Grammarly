@@ -8,7 +8,7 @@ Use **Live Fix** to press a system-wide hotkey in any text field, switch to **Re
 
 ## Demo Video
 
-[![Watch the LLM-Grammarly Demo on YouTube](assets/demo-thumbnail.jpg)](https://www.youtube.com/watch?v=wODhHUNj1fM)
+[![Watch the LLM-Grammarly Demo on YouTube](assets/demo-thumbnail-v4.jpg)](https://www.youtube.com/watch?v=wODhHUNj1fM)
 
 ▶ **[Watch the demo on YouTube](https://www.youtube.com/watch?v=wODhHUNj1fM)** — GitHub download & unblock, one-click Hugging Face download (pause/resume & Vulkan/Metal), GPU/CPU presets, compute modes & custom hotkeys, Live Fix & Highlight Mode in any text editor, Review Docs (`.txt`/`.md`/`.docx` batch diffs, Rewrite for Clarity whole-file fix & timestamped backups), and Ignore Words (custom terms & social `@mentions`/`#hashtags` protection).
 
@@ -182,7 +182,7 @@ LLM-Grammarly/
 ├── LICENSE                           # MIT License
 ├── README.md
 ├── assets/
-│   └── demo-thumbnail.jpg            # YouTube demo thumbnail preview
+│   └── demo-thumbnail-v4.jpg         # YouTube demo thumbnail preview
 ├── windows/                          # Windows implementation (eframe + Win32 + Vulkan)
 │   ├── Cargo.toml                    # Windows crate manifest & winresource metadata
 │   ├── Cargo.lock                    # Locked Windows dependency graph
